@@ -260,62 +260,35 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
-             "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
-             "running" => [
-               %{
-                 "issue_id" => "issue-http",
-                 "issue_identifier" => "MT-HTTP",
-                 "issue_url" => "https://example.org/issues/MT-HTTP",
-                 "state" => "In Progress",
-                 "worker_host" => nil,
-                 "workspace_path" => nil,
-                 "session_id" => "thread-http",
-                 "turn_count" => 7,
-                 "last_event" => "notification",
-                 "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               }
-             ],
-             "retrying" => [
-               %{
-                 "issue_id" => "issue-retry",
-                 "issue_identifier" => "MT-RETRY",
-                 "issue_url" => "https://example.org/issues/MT-RETRY",
-                 "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                 "error" => "boom",
-                 "worker_host" => nil,
-                 "workspace_path" => nil
-               }
-             ],
-             "blocked" => [
-               %{
-                 "issue_id" => "issue-blocked",
-                 "issue_identifier" => "MT-BLOCKED",
-                 "issue_url" => "https://example.org/issues/MT-BLOCKED",
-                 "state" => "In Progress",
-                 "error" => "codex turn requires operator input",
-                 "worker_host" => "dm-dev2",
-                 "workspace_path" => "/workspaces/MT-BLOCKED",
-                 "session_id" => "thread-blocked",
-                 "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
-                 "last_event" => "turn_input_required",
-                 "last_message" => "turn blocked: waiting for user input",
-                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
-               }
-             ],
-             "codex_totals" => %{
-               "input_tokens" => 4,
-               "output_tokens" => 8,
-               "total_tokens" => 12,
-               "seconds_running" => 42.5
-             },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+    assert state_payload["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "completed" => 0
            }
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HTTP",
+               "agent_messages" => [],
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 0,
+                 "uncached_input_tokens" => 4,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               }
+             }
+           ] = state_payload["running"]
+
+    assert [%{"issue_identifier" => "MT-RETRY", "attempt" => 2}] = state_payload["retrying"]
+    assert [%{"issue_identifier" => "MT-BLOCKED"}] = state_payload["blocked"]
+    assert state_payload["completed"] == []
+    assert state_payload["codex_totals"]["cached_input_tokens"] == 0
+    assert state_payload["codex_totals"]["uncached_input_tokens"] == 4
+    assert state_payload["rate_limits"] == %{"primary" => %{"remaining" => 11}}
+    assert state_payload["rate_limits_status"]["status"] == "current"
+    assert state_payload["rate_limits_by_limit_id"]["codex"]["secondary"]["usedPercent"] == 42
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -339,7 +312,14 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 0,
+                 "uncached_input_tokens" => 4,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               },
+               "agent_messages" => []
              },
              "retry" => nil,
              "blocked" => nil,
@@ -509,11 +489,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
-    assert html =~ "Runtime"
+    assert html =~ "Agent runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Agent output"
+    assert html =~ "New context"
+    assert html =~ "Completed runs"
+    assert html =~ "account/rateLimits/read"
+    assert html =~ "Codex · Primary"
+    assert html =~ "Codex · Secondary"
+    assert html =~ "codex:primary"
+    assert html =~ "codex:secondary"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -610,7 +596,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "completed" => 0
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -703,7 +695,28 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      rate_limits_by_limit_id: %{
+        "codex" => %{
+          "limitId" => "codex",
+          "limitName" => "Codex",
+          "primary" => %{
+            "usedPercent" => 17,
+            "resetsAt" => 1_785_510_074,
+            "windowDurationMins" => 300
+          },
+          "secondary" => %{
+            "usedPercent" => 42,
+            "resetsAt" => 1_785_600_000,
+            "windowDurationMins" => 10_080
+          }
+        }
+      },
+      rate_limits_status: %{
+        status: :current,
+        updated_at: DateTime.utc_now(),
+        error: nil
+      }
     }
   end
 

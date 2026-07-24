@@ -1397,10 +1397,14 @@ SHOULD return:
 - session and retry rows SHOULD include the tracker-provided issue URL when available
 - `codex_totals`
   - `input_tokens`
+  - `cached_input_tokens`
+  - `uncached_input_tokens`
   - `output_tokens`
   - `total_tokens`
   - `seconds_running` (aggregate runtime seconds as of snapshot time, including active sessions)
 - `rate_limits` (latest coding-agent rate limit payload, if available)
+- `rate_limits_status` (freshness, last successful update, and polling error, if available)
+- `completed_runs` (bounded recent successful run records, if retained)
 
 RECOMMENDED snapshot error modes:
 
@@ -1488,7 +1492,11 @@ Enablement (extension):
 
 - Host a human-readable dashboard at `/`.
 - The returned document SHOULD depict the current state of the system (for example active sessions,
-  retry delays, token consumption, runtime totals, recent events, and health/error indicators).
+  retry delays, completed runs, cache-aware token consumption, runtime totals, recent agent
+  messages, and health/error indicators).
+- A dashboard that reports account rate limits SHOULD read the coding-agent account endpoint
+  independently of active worker notifications and SHOULD distinguish unavailable or stale account
+  data from unavailable orchestrator state.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 

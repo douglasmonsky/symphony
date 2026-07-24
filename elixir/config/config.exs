@@ -17,5 +17,7 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
 
 if config_env() == :test do
   config :symphony_elixir,
-    workflow_file_path: Path.expand("../test/fixtures/startup_workflow.md", __DIR__)
+    workflow_file_path: Path.expand("../test/fixtures/startup_workflow.md", __DIR__),
+    completed_runs_file: false,
+    rate_limits_poll_enabled: false
 end

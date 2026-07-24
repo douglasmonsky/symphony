@@ -173,7 +173,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            "method" => "thread/tokenUsage/updated",
            "params" => %{
              "tokenUsage" => %{
-               "total" => %{"inputTokens" => 12, "outputTokens" => 4, "totalTokens" => 16}
+               "total" => %{
+                 "inputTokens" => 12,
+                 "cachedInputTokens" => 9,
+                 "outputTokens" => 4,
+                 "totalTokens" => 16
+               }
              }
            }
          },
@@ -182,10 +187,30 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "item/completed",
+           "params" => %{
+             "item" => %{
+               "id" => "message-1",
+               "type" => "agentMessage",
+               "text" => "Implemented the requested change and opened the issue for review."
+             }
+           }
+         },
+         timestamp: now
+       }}
+    )
+
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_app_server_pid == "4242"
     assert snapshot_entry.codex_input_tokens == 12
+    assert snapshot_entry.codex_cached_input_tokens == 9
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
     assert snapshot_entry.turn_count == 1
@@ -195,9 +220,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     completed_state = :sys.get_state(pid)
 
     assert completed_state.codex_totals.input_tokens == 12
+    assert completed_state.codex_totals.cached_input_tokens == 9
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
+
+    assert [
+             %{
+               identifier: "MT-201",
+               agent_messages: [
+                 "Implemented the requested change and opened the issue for review."
+               ]
+             }
+           ] = completed_state.completed_runs
   end
 
   test "orchestrator snapshot tracks turn completed usage when present" do
@@ -467,6 +502,47 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.rate_limits == rate_limits
+  end
+
+  test "rate limit reader crashes clear refresh state and schedule another poll" do
+    orchestrator_name = Module.concat(__MODULE__, :RateLimitCrashOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    previous_poll_setting = Application.get_env(:symphony_elixir, :rate_limits_poll_enabled)
+
+    on_exit(fn ->
+      Application.put_env(
+        :symphony_elixir,
+        :rate_limits_poll_enabled,
+        previous_poll_setting
+      )
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :rate_limits_poll_enabled, true)
+    task_ref = make_ref()
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | codex_rate_limits: %{"limitId" => "codex"},
+          codex_rate_limits_status: :refreshing,
+          rate_limits_refresh_in_progress: true,
+          rate_limits_task_ref: task_ref,
+          rate_limits_timer_ref: nil
+      }
+    end)
+
+    send(pid, {:DOWN, task_ref, :process, self(), :boom})
+    state = :sys.get_state(pid)
+
+    assert state.codex_rate_limits_status == :stale
+    assert state.codex_rate_limits_error =~ "rate_limits_task_exit"
+    refute state.rate_limits_refresh_in_progress
+    assert is_nil(state.rate_limits_task_ref)
+    assert is_reference(state.rate_limits_timer_ref)
   end
 
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do

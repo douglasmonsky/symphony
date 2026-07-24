@@ -1,6 +1,52 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "reads account rate limits without creating a thread" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-rate-limits-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3)
+            printf '%s\\n' '{"id":4,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":17}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":17}}}}}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok,
+              %{
+                "rateLimits" => %{
+                  "limitId" => "codex",
+                  "primary" => %{"usedPercent" => 17}
+                }
+              }} = AppServer.read_rate_limits()
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

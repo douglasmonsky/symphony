@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @rate_limits_id 4
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -145,6 +146,38 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
+  end
+
+  @doc """
+  Reads the authenticated Codex account rate limits without creating a thread.
+  """
+  @spec read_rate_limits() :: {:ok, map()} | {:error, term()}
+  def read_rate_limits do
+    dynamic_tool_binding = DynamicTool.bind()
+
+    case start_port(File.cwd!(), nil, dynamic_tool_binding) do
+      {:ok, port} ->
+        try do
+          with :ok <- send_initialize(port) do
+            send_message(port, %{
+              "method" => "account/rateLimits/read",
+              "id" => @rate_limits_id,
+              "params" => %{}
+            })
+
+            case await_response(port, @rate_limits_id) do
+              {:ok, %{} = result} -> {:ok, result}
+              {:ok, result} -> {:error, {:invalid_rate_limits_response, result}}
+              {:error, _reason} = error -> error
+            end
+          end
+        after
+          stop_port(port)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
