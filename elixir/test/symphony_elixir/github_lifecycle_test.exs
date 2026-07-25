@@ -135,7 +135,7 @@ defmodule SymphonyElixir.GitHub.LifecycleTest do
 
     assert_receive {:github_request, "POST", "/repos/octo/repo/issues/42/labels", %{}, %{"labels" => ["agent-running"]}}
 
-    assert_receive {:github_request, "DELETE", "/repos/octo/repo/issues/42/labels/agent-ready", %{}, nil}
+    refute_receive {:github_request, "DELETE", "/repos/octo/repo/issues/42/labels/agent-ready", %{}, nil}
 
     verification = %{
       command: "make all",
@@ -161,6 +161,60 @@ defmodule SymphonyElixir.GitHub.LifecycleTest do
     assert_receive {:github_request, "POST", "/repos/octo/repo/issues/42/labels", %{}, %{"labels" => ["human-review"]}}
 
     assert_receive {:github_request, "DELETE", "/repos/octo/repo/issues/42/labels/agent-running", %{}, nil}
+    assert_receive {:github_request, "DELETE", "/repos/octo/repo/issues/42/labels/agent-ready", %{}, nil}
+  end
+
+  test "keeps ready routing while running and resets an existing workpad" do
+    test_pid = self()
+
+    request = fn method, path, params, body ->
+      send(test_pid, {:github_request, method, path, params, body})
+
+      if method == "GET" do
+        {:ok,
+         %{
+           status: 200,
+           body: [
+             %{
+               "id" => 88,
+               "body" => "## Symphony Workpad\n\nStale branch.",
+               "html_url" => "https://github.test/comment/88"
+             }
+           ]
+         }}
+      else
+        {:ok, %{status: 200, body: %{}}}
+      end
+    end
+
+    command = fn _workspace, shell_command, _env ->
+      case shell_command do
+        "git branch --show-current" -> {:ok, "codex/symphony-gh-46\n"}
+        "command -v rg" -> {:ok, "/opt/homebrew/bin/rg\n"}
+      end
+    end
+
+    issue = %Issue{
+      id: "46",
+      identifier: "GH-46",
+      title: "Resume safely",
+      native_ref: %{"repo" => "octo/repo"}
+    }
+
+    assert {:ok, context} =
+             Lifecycle.start(issue, "/work/GH-46", request: request, command: command)
+
+    assert context.workpad_comment_id == 88
+    assert context.workpad_body =~ "Branch: `codex/symphony-gh-46`"
+    refute context.workpad_body =~ "Stale branch"
+
+    assert_receive {:github_request, "POST", "/repos/octo/repo/issues/46/labels", %{}, %{"labels" => ["agent-running"]}}
+
+    refute_receive {:github_request, "DELETE", "/repos/octo/repo/issues/46/labels/agent-ready", %{}, nil}
+
+    assert_receive {:github_request, "PATCH", "/repos/octo/repo/issues/comments/88", %{}, %{"body" => body}}
+
+    assert body =~ "Phase: `implementation`"
   end
 
   test "refuses phased lifecycle when rg is unavailable" do

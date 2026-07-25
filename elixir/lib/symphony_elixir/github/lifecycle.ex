@@ -38,7 +38,7 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
          {:ok, branch} <- prepare_branch(workspace, issue.identifier, command),
          :ok <- ensure_rg(workspace, command),
          :ok <- add_labels(request, repo, issue_number, [@running_label]),
-         :ok <- remove_labels(request, repo, issue_number, [@ready_label, @blocked_label, @review_label]),
+         :ok <- remove_labels(request, repo, issue_number, [@blocked_label, @review_label]),
          {:ok, comment} <- ensure_workpad(request, repo, issue_number, issue, branch) do
       {:ok,
        %{
@@ -208,7 +208,7 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
       {:ok, %{status: status, body: comments}} when status in 200..299 and is_list(comments) ->
         case Enum.find(comments, &workpad_comment?/1) do
           %{} = comment ->
-            {:ok, comment_context(comment)}
+            reset_workpad(request, repo, comment, issue, branch)
 
           nil ->
             create_workpad(request, path, issue, branch)
@@ -228,6 +228,26 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
 
       other ->
         {:error, {:workpad_create_failed, other}}
+    end
+  end
+
+  defp reset_workpad(request, repo, comment, issue, branch) do
+    body = initial_workpad(issue, branch)
+
+    case comment["id"] do
+      comment_id when is_integer(comment_id) ->
+        path = "/repos/#{repo}/issues/comments/#{comment_id}"
+
+        case request.("PATCH", path, %{}, %{"body" => body}) do
+          {:ok, %{status: status}} when status in 200..299 ->
+            {:ok, comment_context(Map.put(comment, "body", body))}
+
+          other ->
+            {:error, {:workpad_reset_failed, other}}
+        end
+
+      _ ->
+        {:error, :invalid_workpad_comment}
     end
   end
 
