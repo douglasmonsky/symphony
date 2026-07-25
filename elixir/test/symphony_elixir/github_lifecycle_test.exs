@@ -55,6 +55,7 @@ defmodule SymphonyElixir.GitHub.LifecycleTest do
     command = fn _workspace, command, _env ->
       case command do
         "git branch --show-current" -> {:ok, "feature/existing\n"}
+        "git switch -c codex/symphony-gh-45" -> {:ok, ""}
         "command -v rg" -> {:error, :not_found}
       end
     end
@@ -168,6 +169,7 @@ defmodule SymphonyElixir.GitHub.LifecycleTest do
     command = fn _workspace, shell_command, _env ->
       case shell_command do
         "git branch --show-current" -> {:ok, "feature/existing\n"}
+        "git switch -c codex/symphony-gh-43" -> {:ok, ""}
         "command -v rg" -> {:error, :not_found}
       end
     end

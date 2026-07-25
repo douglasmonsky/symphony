@@ -99,15 +99,14 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
         - Summary: #{summary}
         """
 
-    with {:ok, context} <- update_workpad(context, body),
-         :ok <- add_labels(context.request, context.repo, context.issue_number, [label]),
+    with :ok <- add_labels(context.request, context.repo, context.issue_number, [label]),
          :ok <-
            remove_labels(context.request, context.repo, context.issue_number, [
              @running_label,
              @ready_label,
              if(outcome == :ready, do: @blocked_label, else: @review_label)
            ]) do
-      {:ok, context}
+      update_workpad(context, body)
     end
   end
 
@@ -170,23 +169,27 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
   defp issue_identity(_issue), do: {:error, :github_lifecycle_requires_native_ref}
 
   defp prepare_branch(workspace, identifier, command) do
-    with {:ok, current} <- command.(workspace, "git branch --show-current", []),
-         branch <- String.trim(current) do
-      ensure_feature_branch(workspace, branch, identifier, command)
-    end
-  end
-
-  defp ensure_feature_branch(workspace, branch, identifier, command)
-       when branch in ["", "main", "master"] do
     desired = "codex/symphony-#{slug(identifier)}"
 
-    case command.(workspace, "git switch -c #{desired}", []) do
-      {:ok, _output} -> {:ok, desired}
-      {:error, reason} -> {:error, {:branch_prepare_failed, reason}}
+    with {:ok, current} <- command.(workspace, "git branch --show-current", []) do
+      ensure_feature_branch(workspace, String.trim(current), desired, command)
     end
   end
 
-  defp ensure_feature_branch(_workspace, branch, _identifier, _command), do: {:ok, branch}
+  defp ensure_feature_branch(workspace, branch, desired, command) when branch != desired do
+    case command.(workspace, "git switch -c #{desired}", []) do
+      {:ok, _output} ->
+        {:ok, desired}
+
+      {:error, create_reason} ->
+        case command.(workspace, "git switch #{desired}", []) do
+          {:ok, _output} -> {:ok, desired}
+          {:error, _switch_reason} -> {:error, {:branch_prepare_failed, create_reason}}
+        end
+    end
+  end
+
+  defp ensure_feature_branch(_workspace, desired, desired, _command), do: {:ok, desired}
 
   defp ensure_rg(workspace, command) do
     case command.(workspace, "command -v rg", WorkerToolchain.command_env()) do
