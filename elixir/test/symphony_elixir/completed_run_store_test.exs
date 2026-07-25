@@ -43,6 +43,9 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
     assert latest.phase_resumptions["publication"] == 1
     assert latest.compaction_count == 2
     assert latest.circuit_warnings == ["docs warning"]
+    assert [%{kind: "inference"}, %{kind: "tool", tool_name: "command"}] = latest.timeline
+    assert latest.timeline_activity.implementation == %{inference_calls: 1, tool_calls: 1}
+    assert latest.run_id == "run-GH-3"
 
     assert {:ok, %{mode: mode}} = File.stat(path)
     assert Bitwise.band(mode, 0o777) == 0o600
@@ -173,12 +176,16 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
       |> Map.put(:phase_resumptions, "bad resumptions")
       |> Map.put(:compaction_count, -1)
       |> Map.put(:circuit_warnings, "bad warnings")
+      |> Map.put(:timeline, "bad timeline")
 
     absent =
       completed_record("GH-ABSENT-PHASE", ["done"])
       |> Map.put(:phase_token_usage, "bad usage")
       |> Map.put(:phase_resumptions, %{"implementation" => -1})
       |> Map.put(:circuit_warnings, [1, "kept"])
+      |> Map.delete(:timeline)
+      |> Map.delete(:timeline_activity)
+      |> Map.delete(:run_id)
 
     assert :ok = CompletedRunStore.persist([malformed, absent])
     [decoded_malformed, decoded_absent] = CompletedRunStore.load()
@@ -196,11 +203,29 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
     assert decoded_absent.phase_token_usage == %{}
     assert decoded_absent.phase_resumptions["implementation"] == 0
     assert decoded_absent.circuit_warnings == ["kept"]
+    assert decoded_malformed.timeline == []
+    assert decoded_absent.timeline == []
+    assert decoded_absent.timeline_activity == %{}
+    assert String.starts_with?(decoded_absent.run_id, "legacy-")
+  end
+
+  test "derives distinct stable run ids for repeated legacy records" do
+    legacy =
+      completed_record("GH-LEGACY-REPEAT", ["done"])
+      |> Map.delete(:run_id)
+
+    assert :ok = CompletedRunStore.persist([legacy, legacy])
+    [first, second] = CompletedRunStore.load()
+
+    assert first.run_id != second.run_id
+    assert String.starts_with?(first.run_id, "legacy-")
+    assert String.starts_with?(second.run_id, "legacy-")
   end
 
   defp completed_record(identifier, messages) do
     %{
       issue_id: String.downcase(identifier),
+      run_id: "run-#{identifier}",
       identifier: identifier,
       issue_url: "https://github.com/openai/symphony/issues/1",
       state: "Human Review",
@@ -235,6 +260,35 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
       compaction_count: 2,
       circuit_warnings: ["docs warning"],
       agent_messages: messages,
+      timeline_activity: %{implementation: %{inference_calls: 1, tool_calls: 1}},
+      timeline: [
+        %{
+          kind: "inference",
+          phase: :implementation,
+          timestamp: "2026-07-24T20:00:10Z",
+          trigger: "initial prompt",
+          tokens: %{
+            input_tokens: 70,
+            cached_input_tokens: 50,
+            uncached_input_tokens: 20,
+            output_tokens: 7,
+            total_tokens: 77
+          }
+        },
+        %{
+          kind: "tool",
+          phase: :implementation,
+          timestamp: "2026-07-24T20:00:20Z",
+          completed_at: "2026-07-24T20:00:21Z",
+          tool_name: "command",
+          status: "completed",
+          duration_ms: 1_000,
+          exit_code: 0,
+          output_bytes: 120,
+          output_lines: 4,
+          truncated: false
+        }
+      ],
       last_event: "turn_completed",
       last_message: List.last(messages)
     }

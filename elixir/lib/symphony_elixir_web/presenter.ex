@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Workspace}
+  alias SymphonyElixir.{Config, Orchestrator, RunTimeline, StatusDashboard, Workspace}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -109,6 +109,9 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(nil, nil, _blocked), do: "blocked"
 
   defp running_entry_payload(entry) do
+    timeline = RunTimeline.decode(Map.get(entry, :timeline, []))
+    phase_activity = timeline_activity(entry, timeline)
+
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -130,6 +133,8 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: entry.codex_total_tokens
       },
       agent_messages: Map.get(entry, :agent_messages, []),
+      timeline: timeline,
+      phase_activity: phase_activity,
       phase: Map.get(entry, :phase, :intake),
       phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
       phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
@@ -170,6 +175,9 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp running_issue_payload(running) do
+    timeline = RunTimeline.decode(Map.get(running, :timeline, []))
+    phase_activity = timeline_activity(running, timeline)
+
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
@@ -187,7 +195,9 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
       },
-      agent_messages: Map.get(running, :agent_messages, [])
+      agent_messages: Map.get(running, :agent_messages, []),
+      timeline: timeline,
+      phase_activity: phase_activity
     }
   end
 
@@ -219,9 +229,12 @@ defmodule SymphonyElixirWeb.Presenter do
     tokens = Map.get(entry, :tokens, %{})
     input_tokens = Map.get(tokens, :input_tokens, 0)
     cached_input_tokens = Map.get(tokens, :cached_input_tokens, 0)
+    timeline = RunTimeline.decode(Map.get(entry, :timeline, []))
+    phase_activity = timeline_activity(entry, timeline)
 
     %{
       issue_id: Map.get(entry, :issue_id),
+      run_id: Map.get(entry, :run_id),
       issue_identifier: Map.get(entry, :identifier),
       outcome: Map.get(entry, :outcome, "completed"),
       error: Map.get(entry, :error),
@@ -246,9 +259,18 @@ defmodule SymphonyElixirWeb.Presenter do
       compaction_count: Map.get(entry, :compaction_count, 0),
       circuit_warnings: Map.get(entry, :circuit_warnings, []),
       agent_messages: Map.get(entry, :agent_messages, []),
+      timeline: timeline,
+      phase_activity: phase_activity,
       last_event: Map.get(entry, :last_event),
       last_message: Map.get(entry, :last_message)
     }
+  end
+
+  defp timeline_activity(entry, timeline) do
+    case RunTimeline.decode_activity(Map.get(entry, :timeline_activity, %{})) do
+      activity when map_size(activity) > 0 -> activity
+      _activity -> RunTimeline.phase_counts(timeline)
+    end
   end
 
   defp token_totals_payload(totals) when is_map(totals) do

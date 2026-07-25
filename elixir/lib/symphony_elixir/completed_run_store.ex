@@ -2,13 +2,15 @@ defmodule SymphonyElixir.CompletedRunStore do
   @moduledoc """
   Persists the dashboard's bounded terminal-run history.
 
-  The history contains only orchestration metadata and completed agent messages.
-  Tool inputs, tool outputs, and raw protocol events are intentionally excluded.
+  The history contains orchestration metadata, completed agent messages, and a bounded timeline of
+  inference and tool metadata. Raw prompts, reasoning, tool inputs, tool outputs, and protocol events
+  are intentionally excluded.
   """
 
   require Logger
 
   alias SymphonyElixir.LogFile
+  alias SymphonyElixir.RunTimeline
 
   @default_limit 100
   @filename "completed-runs.json"
@@ -25,7 +27,8 @@ defmodule SymphonyElixir.CompletedRunStore do
         with {:ok, contents} <- File.read(path),
              {:ok, records} when is_list(records) <- Jason.decode(contents) do
           records
-          |> Enum.map(&decode_record/1)
+          |> Enum.with_index()
+          |> Enum.map(&decode_indexed_record/1)
           |> Enum.reject(&is_nil/1)
           |> Enum.take(limit)
         else
@@ -86,7 +89,7 @@ defmodule SymphonyElixir.CompletedRunStore do
     end
   end
 
-  defp decode_record(%{"identifier" => identifier, "tokens" => tokens} = record)
+  defp decode_record(%{"identifier" => identifier, "tokens" => tokens} = record, index)
        when is_binary(identifier) and is_map(tokens) do
     with {:ok, decoded_tokens} <- decode_tokens(tokens),
          {:ok, runtime_seconds} <- non_negative_integer(record["runtime_seconds"]),
@@ -94,6 +97,7 @@ defmodule SymphonyElixir.CompletedRunStore do
          {:ok, agent_messages} <- decode_messages(record["agent_messages"]) do
       %{
         issue_id: optional_string(record["issue_id"]),
+        run_id: decode_run_id(record, index),
         identifier: identifier,
         outcome: decode_outcome(record["outcome"]),
         error: optional_string(record["error"]),
@@ -112,6 +116,8 @@ defmodule SymphonyElixir.CompletedRunStore do
         compaction_count: non_negative_integer_or_zero(record["compaction_count"]),
         circuit_warnings: decode_string_list(record["circuit_warnings"]),
         agent_messages: agent_messages,
+        timeline: RunTimeline.decode(record["timeline"]),
+        timeline_activity: RunTimeline.decode_activity(record["timeline_activity"]),
         last_event: optional_string(record["last_event"]),
         last_message: optional_string(record["last_message"])
       }
@@ -120,7 +126,28 @@ defmodule SymphonyElixir.CompletedRunStore do
     end
   end
 
-  defp decode_record(_record), do: nil
+  defp decode_record(_record, _index), do: nil
+  defp decode_indexed_record({record, index}), do: decode_record(record, index)
+
+  defp decode_run_id(record, index) do
+    optional_string(record["run_id"]) ||
+      "legacy-" <>
+        (:crypto.hash(
+           :sha256,
+           Enum.map_join(
+             [
+               record["identifier"],
+               record["session_id"],
+               record["completed_at"],
+               Integer.to_string(index)
+             ],
+             "|",
+             &to_string(&1 || "")
+           )
+         )
+         |> Base.encode16(case: :lower)
+         |> binary_part(0, 16))
+  end
 
   defp decode_outcome("blocked"), do: "blocked"
   defp decode_outcome(_outcome), do: "completed"

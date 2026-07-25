@@ -282,6 +282,13 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
            ] = state_payload["running"]
 
+    assert length(hd(state_payload["running"])["timeline"]) == 3
+
+    assert hd(state_payload["running"])["phase_activity"]["implementation"] == %{
+             "inference_calls" => 2,
+             "tool_calls" => 1
+           }
+
     assert [%{"issue_identifier" => "MT-RETRY", "attempt" => 2}] = state_payload["retrying"]
     assert [%{"issue_identifier" => "MT-BLOCKED"}] = state_payload["blocked"]
     assert state_payload["completed"] == []
@@ -329,7 +336,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "output_tokens" => 8,
                  "total_tokens" => 12
                },
-               "agent_messages" => []
+               "agent_messages" => [],
+               "timeline" => issue_payload["running"]["timeline"],
+               "phase_activity" => %{
+                 "implementation" => %{"inference_calls" => 2, "tool_calls" => 1}
+               }
              },
              "retry" => nil,
              "blocked" => nil,
@@ -509,6 +520,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "New context"
     assert html =~ "Usage by phase"
     assert html =~ "Resumptions"
+    assert html =~ "Inferences"
+    assert html =~ "Internal calls"
+    assert html =~ "2 inferences ·"
+    assert html =~ "1 tool"
+    assert html =~ "Model inference"
+    assert html =~ "tool result: command"
+    assert html =~ "3 lines ·"
     assert html =~ "Implementation"
     assert html =~ "Host command running"
     assert html =~ "Docs-only run token warning."
@@ -531,6 +549,16 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert has_element?(
              view,
              ~s|details#running-session-issue-http[data-running-session="MT-HTTP"][phx-hook="PreserveDetailsOpen"]|
+           )
+
+    assert has_element?(
+             view,
+             ~s|details#running-timeline-issue-http[phx-hook="PreserveDetailsOpen"]|
+           )
+
+    assert has_element?(
+             view,
+             ~s|details#history-session-thread-history-blocked[phx-hook="PreserveDetailsOpen"]|
            )
 
     updated_snapshot =
@@ -703,6 +731,48 @@ defmodule SymphonyElixir.ExtensionsTest do
           compaction_count: 0,
           host_waiting: true,
           circuit_warnings: ["Docs-only run token warning."],
+          timeline_activity: %{implementation: %{inference_calls: 2, tool_calls: 1}},
+          timeline: [
+            %{
+              kind: "inference",
+              phase: :implementation,
+              timestamp: "2026-07-25T12:00:00Z",
+              trigger: "initial prompt",
+              tokens: %{
+                input_tokens: 2,
+                cached_input_tokens: 0,
+                uncached_input_tokens: 2,
+                output_tokens: 4,
+                total_tokens: 6
+              }
+            },
+            %{
+              kind: "tool",
+              phase: :implementation,
+              timestamp: "2026-07-25T12:00:01Z",
+              completed_at: "2026-07-25T12:00:02Z",
+              tool_name: "command",
+              status: "completed",
+              duration_ms: 1_000,
+              exit_code: 0,
+              output_bytes: 50,
+              output_lines: 3,
+              truncated: false
+            },
+            %{
+              kind: "inference",
+              phase: :implementation,
+              timestamp: "2026-07-25T12:00:03Z",
+              trigger: "tool result: command",
+              tokens: %{
+                input_tokens: 2,
+                cached_input_tokens: 2,
+                uncached_input_tokens: 0,
+                output_tokens: 4,
+                total_tokens: 6
+              }
+            }
+          ],
           started_at: DateTime.utc_now()
         }
       ],
@@ -739,6 +809,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       completed_runs: [
         %{
           issue_id: "issue-history-blocked",
+          run_id: "thread-history-blocked",
           identifier: "MT-HISTORY-BLOCKED",
           outcome: "blocked",
           error: "validation requires operator review",
@@ -775,6 +846,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           compaction_count: 2,
           circuit_warnings: [],
           agent_messages: ["waiting for operator"],
+          timeline: [],
           last_event: "turn_input_required",
           last_message: "waiting for operator"
         }
