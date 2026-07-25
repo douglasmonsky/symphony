@@ -19,7 +19,7 @@ defmodule SymphonyElixir.TokenCircuitBreakerTest do
              TokenCircuitBreaker.evaluate(entry, @settings, true)
 
     assert warning =~ "Docs-only run"
-    assert warning =~ "260000"
+    assert warning =~ "250000"
   end
 
   test "pauses when no files changed after the configured limit" do

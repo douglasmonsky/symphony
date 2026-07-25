@@ -46,7 +46,7 @@ defmodule SymphonyElixir.TokenCircuitBreaker do
 
   defp warnings(entry, total, settings) do
     if docs_only?(entry) and total >= settings.token_warn_total do
-      ["Docs-only run has processed #{total} tokens (warning threshold #{settings.token_warn_total})."]
+      ["Docs-only run exceeded the #{settings.token_warn_total}-token warning threshold."]
     else
       []
     end
