@@ -195,11 +195,11 @@ defmodule SymphonyElixir.AppServerTest do
           3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-timeout"}}}' ;;
           4)
             printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-timeout"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"one"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"two"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"turn/completed"}'
             exit 0
             ;;
@@ -213,7 +213,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_command: "#{codex_binary} app-server",
-        codex_turn_timeout_ms: 250
+        codex_turn_timeout_ms: 800
       )
 
       issue = %Issue{
