@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.CompletedRunStore do
   @moduledoc """
-  Persists the dashboard's bounded completed-run history.
+  Persists the dashboard's bounded terminal-run history.
 
   The history contains only orchestration metadata and completed agent messages.
   Tool inputs, tool outputs, and raw protocol events are intentionally excluded.
@@ -95,6 +95,8 @@ defmodule SymphonyElixir.CompletedRunStore do
       %{
         issue_id: optional_string(record["issue_id"]),
         identifier: identifier,
+        outcome: decode_outcome(record["outcome"]),
+        error: optional_string(record["error"]),
         issue_url: optional_string(record["issue_url"]),
         state: optional_string(record["state"]),
         worker_host: optional_string(record["worker_host"]),
@@ -115,6 +117,9 @@ defmodule SymphonyElixir.CompletedRunStore do
   end
 
   defp decode_record(_record), do: nil
+
+  defp decode_outcome("blocked"), do: "blocked"
+  defp decode_outcome(_outcome), do: "completed"
 
   defp decode_tokens(tokens) when is_map(tokens) do
     with {:ok, input_tokens} <- non_negative_integer(tokens["input_tokens"]),

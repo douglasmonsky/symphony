@@ -42,6 +42,22 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
     assert Bitwise.band(mode, 0o777) == 0o600
   end
 
+  test "persists blocked outcomes and defaults legacy records to completed" do
+    records = [
+      completed_record("GH-BLOCKED", ["waiting for operator"])
+      |> Map.put(:outcome, "blocked")
+      |> Map.put(:error, "human decision required"),
+      completed_record("GH-LEGACY", ["done"])
+    ]
+
+    assert :ok = CompletedRunStore.persist(records)
+
+    assert [
+             %{identifier: "GH-BLOCKED", outcome: "blocked", error: "human decision required"},
+             %{identifier: "GH-LEGACY", outcome: "completed", error: nil}
+           ] = CompletedRunStore.load()
+  end
+
   test "returns an empty history for invalid data", %{path: path} do
     File.write!(path, "not-json")
     assert CompletedRunStore.load() == []

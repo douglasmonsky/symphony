@@ -11,18 +11,23 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        history = Enum.map(Map.get(snapshot, :completed_runs, []), &completed_entry_payload/1)
+        completed = Enum.filter(history, &(&1.outcome == "completed"))
+
         %{
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, [])),
-            completed: length(Map.get(snapshot, :completed_runs, []))
+            completed: length(completed),
+            history: length(history)
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
-          completed: Enum.map(Map.get(snapshot, :completed_runs, []), &completed_entry_payload/1),
+          completed: completed,
+          history: history,
           codex_totals: token_totals_payload(snapshot.codex_totals),
           rate_limits: snapshot.rate_limits,
           rate_limits_by_limit_id: Map.get(snapshot, :rate_limits_by_limit_id),
@@ -212,6 +217,8 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       issue_id: Map.get(entry, :issue_id),
       issue_identifier: Map.get(entry, :identifier),
+      outcome: Map.get(entry, :outcome, "completed"),
+      error: Map.get(entry, :error),
       issue_url: Map.get(entry, :issue_url),
       state: Map.get(entry, :state),
       worker_host: Map.get(entry, :worker_host),

@@ -296,12 +296,13 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
-- Completed agent runs are kept newest-first in `log/completed-runs.json` (up to 100 records)
-  with owner-only file permissions and remain expandable after a service restart. Invalid or
-  oversized persisted records are bounded or ignored during recovery.
-- Expandable running and completed rows show completed agent messages, session/workspace metadata,
-  and input split into new context, cached context, and output tokens. Raw tool inputs and outputs
-  are not retained in dashboard history.
+- Completed and blocked agent runs are kept newest-first in `log/completed-runs.json` (up to 100
+  records) with owner-only file permissions and remain expandable after a service restart. Invalid
+  or oversized persisted records are bounded or ignored during recovery.
+- Expandable running and terminal-history rows show completed agent messages, session/workspace
+  metadata, blocked reasons, and input split into new context, cached context, and output tokens.
+  Running-row expansion survives LiveView refresh ticks. Completed and blocked outcomes persist
+  across service restarts; raw tool inputs and outputs are not retained in dashboard history.
 - Account limits are polled once per minute through Codex app-server's
   `account/rateLimits/read` method, including when no issue worker is active. Primary and secondary
   windows render separately, and the dashboard reports current, refreshing, stale, and unavailable

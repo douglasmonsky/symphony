@@ -264,7 +264,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "running" => 1,
              "retrying" => 1,
              "blocked" => 1,
-             "completed" => 0
+             "completed" => 0,
+             "history" => 1
            }
 
     assert [
@@ -284,6 +285,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert [%{"issue_identifier" => "MT-RETRY", "attempt" => 2}] = state_payload["retrying"]
     assert [%{"issue_identifier" => "MT-BLOCKED"}] = state_payload["blocked"]
     assert state_payload["completed"] == []
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HISTORY-BLOCKED",
+               "outcome" => "blocked",
+               "error" => "validation requires operator review"
+             }
+           ] = state_payload["history"]
+
     assert state_payload["codex_totals"]["cached_input_tokens"] == 0
     assert state_payload["codex_totals"]["uncached_input_tokens"] == 4
     assert state_payload["rate_limits"] == %{"primary" => %{"remaining" => 11}}
@@ -434,6 +444,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+    assert html =~ "PreserveDetailsOpen"
+    assert html =~ "beforeUpdate"
+    assert html =~ "hooks: Hooks"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
@@ -494,7 +507,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Agent output"
     assert html =~ "New context"
-    assert html =~ "Completed runs"
+    assert html =~ "Run history"
+    assert html =~ "MT-HISTORY-BLOCKED"
+    assert html =~ "Run blocked"
+    assert html =~ "validation requires operator review"
     assert html =~ "account/rateLimits/read"
     assert html =~ "Codex · Primary"
     assert html =~ "Codex · Secondary"
@@ -506,6 +522,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    assert has_element?(
+             view,
+             ~s|details#running-session-issue-http[data-running-session="MT-HTTP"][phx-hook="PreserveDetailsOpen"]|
+           )
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -548,6 +569,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       render(view) =~ "agent message content streaming: structured update"
     end)
 
+    assert has_element?(view, "details#running-session-issue-http")
     refute render(view) =~ "javascript:alert"
   end
 
@@ -601,7 +623,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "running" => 1,
              "retrying" => 1,
              "blocked" => 1,
-             "completed" => 0
+             "completed" => 0,
+             "history" => 1
            }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
@@ -692,6 +715,32 @@ defmodule SymphonyElixir.ExtensionsTest do
             timestamp: DateTime.utc_now()
           },
           last_codex_timestamp: DateTime.utc_now()
+        }
+      ],
+      completed_runs: [
+        %{
+          issue_id: "issue-history-blocked",
+          identifier: "MT-HISTORY-BLOCKED",
+          outcome: "blocked",
+          error: "validation requires operator review",
+          issue_url: "https://example.org/issues/MT-HISTORY-BLOCKED",
+          state: "Blocked",
+          worker_host: "dm-dev2",
+          workspace_path: "/workspaces/MT-HISTORY-BLOCKED",
+          session_id: "thread-history-blocked",
+          started_at: "2026-07-24T20:00:00Z",
+          completed_at: "2026-07-24T20:05:00Z",
+          runtime_seconds: 300,
+          turn_count: 1,
+          tokens: %{
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 10,
+            total_tokens: 110
+          },
+          agent_messages: ["waiting for operator"],
+          last_event: "turn_input_required",
+          last_message: "waiting for operator"
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

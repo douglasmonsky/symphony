@@ -1187,6 +1187,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              identifier: "MT-INPUT",
              error: "codex turn requires operator input"
            } = state.blocked[issue_id]
+
+    assert [
+             %{
+               identifier: "MT-INPUT",
+               outcome: "blocked",
+               error: "codex turn requires operator input"
+             }
+           ] = state.completed_runs
   end
 
   test "orchestrator blocks normal worker exits after input required completion" do

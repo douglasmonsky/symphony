@@ -811,6 +811,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    blocked_at = DateTime.utc_now()
+    state = record_run(state, running_entry, "blocked", error, blocked_at)
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -819,7 +822,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(running_entry, :workspace_path),
       session_id: running_entry_session_id(running_entry),
       error: error,
-      blocked_at: DateTime.utc_now(),
+      blocked_at: blocked_at,
       last_codex_message: Map.get(running_entry, :last_codex_message),
       last_codex_event: Map.get(running_entry, :last_codex_event),
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
@@ -1699,13 +1702,21 @@ defmodule SymphonyElixir.Orchestrator do
   defp agent_message_for_method(_method, _payload), do: nil
 
   defp record_completed_run(%State{} = state, running_entry) when is_map(running_entry) do
-    completed_at = DateTime.utc_now()
+    record_run(state, running_entry, "completed", nil, DateTime.utc_now())
+  end
+
+  defp record_completed_run(state, _running_entry), do: state
+
+  defp record_run(%State{} = state, running_entry, outcome, error, completed_at)
+       when is_map(running_entry) and outcome in ["completed", "blocked"] do
     cached_input_tokens = Map.get(running_entry, :codex_cached_input_tokens, 0)
     input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
 
     record = %{
       issue_id: running_entry.issue.id,
       identifier: running_entry.identifier,
+      outcome: outcome,
+      error: error,
       issue_url: running_entry.issue.url,
       state: running_entry.issue.state,
       worker_host: Map.get(running_entry, :worker_host),
@@ -1734,8 +1745,6 @@ defmodule SymphonyElixir.Orchestrator do
     _ = CompletedRunStore.persist(completed_runs, @completed_run_limit)
     %{state | completed_runs: completed_runs}
   end
-
-  defp record_completed_run(state, _running_entry), do: state
 
   defp iso8601_timestamp(%DateTime{} = timestamp) do
     timestamp

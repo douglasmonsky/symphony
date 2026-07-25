@@ -90,9 +90,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </article>
 
           <article class="metric-card">
-            <p class="metric-label">Completed runs</p>
-            <p class="metric-value numeric"><%= @payload.counts.completed %></p>
-            <p class="metric-detail">Retained across dashboard restarts.</p>
+            <p class="metric-label">Run history</p>
+            <p class="metric-value numeric"><%= @payload.counts.history %></p>
+            <p class="metric-detail">
+              <%= @payload.counts.completed %> completed · retained across restarts
+            </p>
           </article>
 
           <article class="metric-card">
@@ -186,7 +188,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <p class="empty-state">No active sessions.</p>
           <% else %>
             <div class="task-list">
-              <.running_task :for={entry <- @payload.running} entry={entry} now={@now} />
+              <.running_task
+                :for={entry <- @payload.running}
+                entry={entry}
+                now={@now}
+              />
             </div>
           <% end %>
         </section>
@@ -248,18 +254,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <section class="section-card completed-section">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Completed runs</h2>
+              <h2 class="section-title">Run history</h2>
               <p class="section-copy">
-                The latest 100 successful agent runs, newest first. Repeated attempts remain separate.
+                The latest 100 completed and blocked runs, newest first. Repeated attempts remain separate.
               </p>
             </div>
           </div>
 
-          <%= if @payload.completed == [] do %>
-            <p class="empty-state">No completed runs recorded yet.</p>
+          <%= if @payload.history == [] do %>
+            <p class="empty-state">No terminal runs recorded yet.</p>
           <% else %>
             <div class="task-list">
-              <.completed_task :for={entry <- @payload.completed} entry={entry} />
+              <.history_task :for={entry <- @payload.history} entry={entry} />
             </div>
           <% end %>
         </section>
@@ -273,7 +279,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp running_task(assigns) do
     ~H"""
-    <details class="task-card">
+    <details
+      id={"running-session-#{@entry.issue_id}"}
+      class="task-card"
+      data-running-session={@entry.issue_identifier}
+      phx-hook="PreserveDetailsOpen"
+    >
       <summary class="task-summary">
         <div class="task-identity">
           <.issue_identifier identifier={@entry.issue_identifier} url={@entry.issue_url} />
@@ -303,13 +314,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   attr(:entry, :map, required: true)
 
-  defp completed_task(assigns) do
+  defp history_task(assigns) do
     ~H"""
-    <details class="task-card task-card-completed">
+    <details class={history_task_class(@entry.outcome)}>
       <summary class="task-summary">
         <div class="task-identity">
           <.issue_identifier identifier={@entry.issue_identifier} url={@entry.issue_url} />
-          <span class="state-badge state-badge-completed">Run completed</span>
+          <span class={history_badge_class(@entry.outcome)}>
+            <%= history_outcome_label(@entry.outcome) %>
+          </span>
         </div>
         <span class="task-preview">
           <%= List.last(@entry.agent_messages) || @entry.last_message || "Agent run completed." %>
@@ -323,11 +336,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <div class="task-body">
         <.token_breakdown tokens={@entry.tokens} />
         <.agent_outputs messages={@entry.agent_messages} />
+        <div :if={@entry.error} class="message-panel">
+          <h3>Blocked reason</h3>
+          <p><%= @entry.error %></p>
+        </div>
         <.detail_grid
           session_id={@entry.session_id}
           workspace_path={@entry.workspace_path}
           worker_host={@entry.worker_host}
-          timestamp_label="Completed"
+          timestamp_label={history_timestamp_label(@entry.outcome)}
           timestamp={@entry.completed_at}
         />
       </div>
@@ -666,6 +683,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp rate_limit_status_label(status) when status in [:stale, "stale"], do: "Stale"
   defp rate_limit_status_label(status) when status in [:error, "error"], do: "Unavailable"
   defp rate_limit_status_label(_status), do: "Waiting"
+
+  defp history_task_class("blocked"), do: "task-card task-card-danger"
+  defp history_task_class(_outcome), do: "task-card task-card-completed"
+
+  defp history_badge_class("blocked"), do: "state-badge state-badge-danger"
+  defp history_badge_class(_outcome), do: "state-badge state-badge-completed"
+
+  defp history_outcome_label("blocked"), do: "Run blocked"
+  defp history_outcome_label(_outcome), do: "Run completed"
+
+  defp history_timestamp_label("blocked"), do: "Blocked"
+  defp history_timestamp_label(_outcome), do: "Completed"
 
   defp schedule_runtime_tick do
     Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
