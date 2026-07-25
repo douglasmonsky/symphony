@@ -80,10 +80,16 @@ defmodule SymphonyElixir.TaskCapsule do
     Changed paths:
     #{render_list(Map.get(context, :changed_paths, []))}
 
-    Load only the repository publishing skill now. If verification passed, commit and publish the
-    scoped changes and open or update the PR. If verification failed or a true external blocker
-    remains, preserve the workspace and report BLOCKED. Symphony will perform lifecycle labels,
-    workpad evidence attachment, and final cleanup from the declared result.
+    Load `.codex/skills/push/SKILL.md` only for commit, push, and PR mechanics. The host
+    verification above is authoritative: do not run its validation step or launch the final
+    gate again.
+
+    If verification passed, publish exactly the changed paths with
+    `/Users/Monsky/.codex-symphony/bin/symphony-git publish <conventional-commit-message> <path>...`,
+    then open or update the PR against the base branch required by the issue. If verification
+    failed or a true external blocker remains, preserve the workspace and report BLOCKED.
+    Symphony will perform lifecycle labels, workpad evidence attachment, and final cleanup after
+    the declared result.
 
     End the final response with exactly one declaration:
     SYMPHONY_OUTCOME: READY

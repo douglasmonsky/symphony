@@ -80,7 +80,9 @@ defmodule SymphonyElixir.TaskCapsuleTest do
         verification: verification
       })
 
-    assert publication =~ "Load only the repository publishing skill now"
+    assert publication =~ ".codex/skills/push/SKILL.md"
+    assert publication =~ "do not run its validation step"
+    assert publication =~ "symphony-git publish"
     assert publication =~ "SYMPHONY_OUTCOME: READY"
     assert publication =~ "SYMPHONY_OUTCOME: BLOCKED"
   end
