@@ -176,6 +176,9 @@ Notes:
   `agent.verification_command`, uses three model phases (implementation, verification
   interpretation, and publish-or-block), and explicitly compacts the Codex thread
   between phases.
+- The implementation worker may only prepare the allowed-file diff, the verification-interpretation
+  worker may only judge the host-run result, and only the publish-or-block worker may publish or
+  report a blocker.
 - In phased execution, Symphony prepares the branch, manages lifecycle labels and the
   single Symphony workpad, launches the final gate exactly once without a PTY, writes
   full output under the host temporary `symphony-verification/` artifact directory, and
