@@ -181,6 +181,71 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            "params" => %{
              "tokenUsage" => %{
                "total" => %{
+                 "inputTokens" => 5,
+                 "cachedInputTokens" => 3,
+                 "outputTokens" => 1,
+                 "totalTokens" => 6
+               }
+             }
+           }
+         },
+         timestamp: now,
+         codex_app_server_pid: "4242"
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "item/started",
+           "params" => %{
+             "item" => %{
+               "id" => "command-1",
+               "type" => "commandExecution",
+               "command" => "rg phase",
+               "status" => "running"
+             }
+           }
+         },
+         timestamp: DateTime.add(now, 10, :millisecond)
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "item/completed",
+           "params" => %{
+             "item" => %{
+               "id" => "command-1",
+               "type" => "commandExecution",
+               "command" => "rg phase",
+               "status" => "completed",
+               "aggregatedOutput" => "one result",
+               "exitCode" => 0
+             }
+           }
+         },
+         timestamp: DateTime.add(now, 20, :millisecond)
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "thread/tokenUsage/updated",
+           "params" => %{
+             "tokenUsage" => %{
+               "total" => %{
                  "inputTokens" => 12,
                  "cachedInputTokens" => 9,
                  "outputTokens" => 4,
@@ -189,7 +254,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              }
            }
          },
-         timestamp: now,
+         timestamp: DateTime.add(now, 30, :millisecond),
          codex_app_server_pid: "4242"
        }}
     )
@@ -224,6 +289,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.phase == :implementation
     assert snapshot_entry.phase_token_usage.implementation.total_tokens == 16
     assert snapshot_entry.phase_resumptions.implementation == 1
+
+    assert [
+             %{kind: "inference", tokens: %{total_tokens: 6}},
+             %{kind: "tool", tool_name: "command", output_lines: 1},
+             %{kind: "inference", trigger: "tool result: command", tokens: %{total_tokens: 10}}
+           ] = snapshot_entry.timeline
+
+    assert snapshot_entry.timeline_activity == %{
+             implementation: %{inference_calls: 2, tool_calls: 1}
+           }
+
     assert snapshot_entry.compaction_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
     refute :sys.get_state(pid).running[issue_id].host_waiting

@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Orchestrator do
     AgentRunner,
     CompletedRunStore,
     Config,
+    RunTimeline,
     StatusDashboard,
     TaskCapsule,
     TokenCircuitBreaker,
@@ -274,6 +275,7 @@ defmodule SymphonyElixir.Orchestrator do
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
         updated_running_entry = track_phase_usage(updated_running_entry, update, token_delta)
+        updated_running_entry = RunTimeline.record(updated_running_entry, update, token_delta)
 
         state =
           state
@@ -1108,6 +1110,8 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             agent_messages: [],
+            timeline: [],
+            timeline_activity: %{},
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
@@ -1558,6 +1562,8 @@ defmodule SymphonyElixir.Orchestrator do
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
           agent_messages: Map.get(metadata, :agent_messages, []),
+          timeline: Map.get(metadata, :timeline, []),
+          timeline_activity: Map.get(metadata, :timeline_activity, %{}),
           turn_count: Map.get(metadata, :turn_count, 0),
           phase: Map.get(metadata, :phase, :intake),
           phase_token_usage: Map.get(metadata, :phase_token_usage, %{}),
@@ -2019,6 +2025,9 @@ defmodule SymphonyElixir.Orchestrator do
 
     record = %{
       issue_id: running_entry.issue.id,
+      run_id:
+        Map.get(running_entry, :session_id) ||
+          "run-#{System.unique_integer([:positive, :monotonic])}",
       identifier: running_entry.identifier,
       outcome: outcome,
       error: error,
@@ -2043,6 +2052,11 @@ defmodule SymphonyElixir.Orchestrator do
       compaction_count: Map.get(running_entry, :compaction_count, 0),
       circuit_warnings: Map.get(running_entry, :circuit_warnings, []),
       agent_messages: Map.get(running_entry, :agent_messages, []),
+      timeline: running_entry |> Map.get(:timeline, []) |> RunTimeline.decode(),
+      timeline_activity:
+        running_entry
+        |> Map.get(:timeline_activity, %{})
+        |> RunTimeline.decode_activity(),
       last_event: to_string(Map.get(running_entry, :last_codex_event) || ""),
       last_message:
         running_entry

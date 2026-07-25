@@ -306,10 +306,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <.phase_breakdown
           usage={@entry.phase_token_usage}
           resumptions={@entry.phase_resumptions}
+          activity={@entry.phase_activity}
           compaction_count={@entry.compaction_count}
         />
         <.circuit_warnings warnings={@entry.circuit_warnings} />
-        <.agent_outputs messages={@entry.agent_messages} />
+        <.agent_outputs
+          messages={@entry.agent_messages}
+          timeline={@entry.timeline}
+          timeline_id={"running-timeline-#{@entry.issue_id}"}
+        />
         <.detail_grid
           session_id={@entry.session_id}
           workspace_path={@entry.workspace_path}
@@ -326,7 +331,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp history_task(assigns) do
     ~H"""
-    <details class={history_task_class(@entry.outcome)}>
+    <details
+      id={"history-session-#{@entry.run_id}"}
+      class={history_task_class(@entry.outcome)}
+      phx-hook="PreserveDetailsOpen"
+    >
       <summary class="task-summary">
         <div class="task-identity">
           <.issue_identifier identifier={@entry.issue_identifier} url={@entry.issue_url} />
@@ -348,10 +357,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <.phase_breakdown
           usage={@entry.phase_token_usage}
           resumptions={@entry.phase_resumptions}
+          activity={@entry.phase_activity}
           compaction_count={@entry.compaction_count}
         />
         <.circuit_warnings warnings={@entry.circuit_warnings} />
-        <.agent_outputs messages={@entry.agent_messages} />
+        <.agent_outputs
+          messages={@entry.agent_messages}
+          timeline={@entry.timeline}
+          timeline_id={"history-timeline-#{@entry.run_id}"}
+        />
         <div :if={@entry.error} class="message-panel">
           <h3>Blocked reason</h3>
           <p><%= @entry.error %></p>
@@ -395,6 +409,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   attr(:usage, :list, required: true)
   attr(:resumptions, :map, required: true)
+  attr(:activity, :map, required: true)
   attr(:compaction_count, :integer, required: true)
 
   defp phase_breakdown(assigns) do
@@ -414,6 +429,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <th>Output</th>
               <th>Processed</th>
               <th>Resumptions</th>
+              <th>Inferences</th>
+              <th>Tools</th>
             </tr>
           </thead>
           <tbody>
@@ -424,6 +441,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
               <td class="numeric"><%= format_int(phase.output_tokens) %></td>
               <td class="numeric"><%= format_int(phase.total_tokens) %></td>
               <td class="numeric"><%= Map.get(@resumptions, phase.phase, 0) %></td>
+              <td class="numeric">
+                <%= phase_activity_count(@activity, phase.phase, :inference_calls) %>
+              </td>
+              <td class="numeric"><%= phase_activity_count(@activity, phase.phase, :tool_calls) %></td>
             </tr>
           </tbody>
         </table>
@@ -446,6 +467,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   attr(:messages, :list, required: true)
+  attr(:timeline, :list, required: true)
+  attr(:timeline_id, :string, required: true)
 
   defp agent_outputs(assigns) do
     ~H"""
@@ -461,6 +484,76 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </li>
         </ol>
       <% end %>
+      <details
+        :if={@timeline != []}
+        id={@timeline_id}
+        class="timeline-details"
+        phx-hook="PreserveDetailsOpen"
+      >
+        <summary>
+          <span>Internal calls</span>
+          <span class="numeric">
+            <%= format_timeline_count(@timeline, "inference") %> ·
+            <%= format_timeline_count(@timeline, "tool") %>
+          </span>
+        </summary>
+        <ol class="timeline-list">
+          <li :for={{record, index} <- Enum.with_index(@timeline, 1)} class="timeline-record">
+            <div class="timeline-record-header">
+              <span class="message-number numeric"><%= index %></span>
+              <strong><%= timeline_record_label(record) %></strong>
+              <span class="state-badge state-badge-phase"><%= phase_label(record.phase) %></span>
+              <span class="timeline-time numeric"><%= format_timestamp(record.timestamp) %></span>
+            </div>
+            <%= if record.kind == "inference" do %>
+              <p class="timeline-summary"><%= record.trigger || "model continuation" %></p>
+              <dl class="timeline-metrics">
+                <div>
+                  <dt>New</dt>
+                  <dd class="numeric"><%= format_int(record.tokens.uncached_input_tokens) %></dd>
+                </div>
+                <div>
+                  <dt>Cached</dt>
+                  <dd class="numeric"><%= format_int(record.tokens.cached_input_tokens) %></dd>
+                </div>
+                <div>
+                  <dt>Output</dt>
+                  <dd class="numeric"><%= format_int(record.tokens.output_tokens) %></dd>
+                </div>
+                <div>
+                  <dt>Processed</dt>
+                  <dd class="numeric"><%= format_int(record.tokens.total_tokens) %></dd>
+                </div>
+              </dl>
+            <% else %>
+              <dl class="timeline-metrics">
+                <div>
+                  <dt>Status</dt>
+                  <dd><%= record.status %></dd>
+                </div>
+                <div>
+                  <dt>Duration</dt>
+                  <dd class="numeric"><%= format_duration_ms(record.duration_ms) %></dd>
+                </div>
+                <div>
+                  <dt>Result</dt>
+                  <dd class="numeric">
+                    <%= format_int(record.output_lines) %> lines ·
+                    <%= format_int(record.output_bytes) %> bytes
+                  </dd>
+                </div>
+                <div>
+                  <dt>Exit</dt>
+                  <dd class="numeric"><%= record.exit_code || "n/a" %></dd>
+                </div>
+              </dl>
+              <p :if={record.truncated} class="timeline-truncated">
+                Dashboard summary truncated; full output remains outside dashboard history.
+              </p>
+            <% end %>
+          </li>
+        </ol>
+      </details>
     </section>
     """
   end
@@ -662,6 +755,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
     |> String.replace("_", " ")
     |> String.capitalize()
   end
+
+  defp phase_activity_count(activity, phase, key) do
+    counts = Map.get(activity, phase) || Map.get(activity, to_string(phase)) || %{}
+    Map.get(counts, key) || Map.get(counts, to_string(key)) || 0
+  end
+
+  defp timeline_count(timeline, kind) do
+    Enum.count(timeline, &(&1.kind == kind))
+  end
+
+  defp format_timeline_count(timeline, kind) do
+    count = timeline_count(timeline, kind)
+    label = if count == 1, do: kind, else: "#{kind}s"
+    "#{count} #{label}"
+  end
+
+  defp timeline_record_label(%{kind: "inference"}), do: "Model inference"
+  defp timeline_record_label(%{kind: "tool", tool_name: tool_name}), do: tool_name
+  defp timeline_record_label(_record), do: "Internal event"
+
+  defp format_duration_ms(duration_ms) when is_integer(duration_ms) and duration_ms >= 1_000 do
+    "#{Float.round(duration_ms / 1_000, 1)}s"
+  end
+
+  defp format_duration_ms(duration_ms) when is_integer(duration_ms) and duration_ms >= 0,
+    do: "#{duration_ms}ms"
+
+  defp format_duration_ms(_duration_ms), do: "n/a"
 
   defp cache_ratio(%{input_tokens: input, cached_input_tokens: cached})
        when is_number(input) and input > 0 and is_number(cached) do

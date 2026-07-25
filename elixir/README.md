@@ -342,10 +342,12 @@ The observability UI now runs on a minimal Phoenix stack:
   or oversized persisted records are bounded or ignored during recovery.
 - Expandable running and terminal-history rows show completed agent messages, session/workspace
   metadata, blocked reasons, and input split into new context, cached context, and output tokens.
-  Phased runs also show the current phase, per-phase token totals, model resumptions, compaction
-  count, and token-guardrail warnings. Running-row expansion survives LiveView refresh ticks.
-  Completed and blocked outcomes persist across service restarts; raw tool inputs and outputs are
-  not retained in dashboard history.
+  Phased runs also show the current phase, per-phase token totals, model resumptions, inference and
+  tool-call counts, compaction count, and token-guardrail warnings. Agent output can expand into a
+  chronological internal-call timeline with per-inference token deltas and bounded tool metadata.
+  Expanded rows survive LiveView refresh ticks. Completed and blocked outcomes persist across
+  service restarts; raw prompts, reasoning, tool arguments, and tool outputs are not retained in
+  dashboard history.
 - Account limits are polled once per minute through Codex app-server's
   `account/rateLimits/read` method, including when no issue worker is active. Primary and secondary
   windows render separately, and the dashboard reports current, refreshing, stale, and unavailable
