@@ -20,6 +20,7 @@ defmodule SymphonyElixir.TaskCapsuleTest do
       ## Acceptance criteria
       - The two documents agree.
       - The final gate is host-owned.
+      - Open the pull request against `release/docs`.
 
       ## Validation
       - Run `make -C elixir all`.
@@ -42,12 +43,18 @@ defmodule SymphonyElixir.TaskCapsuleTest do
     assert capsule =~ "Verification:\n- make -C elixir all"
     assert capsule =~ "Branch: codex/gh-42"
     assert capsule =~ "Symphony owns branch preparation"
+    assert capsule =~ "Current phase: implementation"
+    assert capsule =~ "Do not fetch, pull, commit, push"
+    refute capsule =~ "Open the pull request"
     refute capsule =~ "very long overlapping workflow narrative"
     refute capsule =~ "Introductory prose"
+    assert TaskCapsule.publication_base(issue) == "release/docs"
 
     default_capsule = TaskCapsule.build(issue, "/work/GH-42")
     assert default_capsule =~ "Branch: unknown"
     assert default_capsule =~ "repository-defined focused checks"
+    assert TaskCapsule.publication_base(%Issue{description: "No pull request base specified."}) == nil
+    assert TaskCapsule.publication_base(%Issue{}) == nil
   end
 
   test "phase handoffs contain only bounded diff and verification facts" do
@@ -77,12 +84,14 @@ defmodule SymphonyElixir.TaskCapsuleTest do
     publication =
       TaskCapsule.phase_handoff(:publication, %{
         changed_paths: ["README.md"],
-        verification: verification
+        verification: verification,
+        base_branch: "release/docs"
       })
 
     assert publication =~ ".codex/skills/push/SKILL.md"
     assert publication =~ "do not run its validation step"
     assert publication =~ "symphony-git publish"
+    assert publication =~ "Pull request base: release/docs"
     assert publication =~ "SYMPHONY_OUTCOME: READY"
     assert publication =~ "SYMPHONY_OUTCOME: BLOCKED"
   end

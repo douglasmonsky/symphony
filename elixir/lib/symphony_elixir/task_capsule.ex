@@ -5,7 +5,11 @@ defmodule SymphonyElixir.TaskCapsule do
 
   alias SymphonyElixir.Tracker.Issue
 
-  @section_names ["scope", "acceptance criteria", "validation", "test plan", "testing"]
+  @publication_patterns [
+    ~r/\b(pull request|pr)\b/i,
+    ~r/\b(commit|push|publish|merge)\b/i,
+    ~r/\b(agent-ready|agent-running|agent-blocked|human-review)\b/i
+  ]
 
   @spec build(Issue.t(), Path.t(), keyword()) :: String.t()
   def build(%Issue{} = issue, workspace, opts \\ []) when is_binary(workspace) and is_list(opts) do
@@ -24,11 +28,8 @@ defmodule SymphonyElixir.TaskCapsule do
     Allowed files:
     #{render_list(allowed_files(description))}
 
-    Acceptance criteria:
-    #{render_list(section_items(description, ["acceptance criteria"]))}
-
-    Scoped requirements:
-    #{render_list(section_items(description, @section_names))}
+    Implementation acceptance criteria:
+    #{render_list(implementation_criteria(description))}
 
     Verification:
     - #{verification}
@@ -46,9 +47,29 @@ defmodule SymphonyElixir.TaskCapsule do
       and the publish-or-block decision.
     - Do not run the final verification command yourself.
     - Do not mutate lifecycle labels or create progress comments.
+
+    Current phase: implementation
+    - Complete only the allowed file edits and bounded working-tree diff inspection.
+    - Do not fetch, pull, commit, push, open or update a pull request, or call GitHub APIs.
+    - Do not load publishing or blocked-procedure skills.
+    - End this phase as soon as the working-tree diff is ready for host verification.
     """
     |> String.trim()
   end
+
+  @spec publication_base(Issue.t()) :: String.t() | nil
+  def publication_base(%Issue{description: description}) when is_binary(description) do
+    case Regex.run(
+           ~r/(?:pull request|pr).{0,40}(?:against|base(?:d)? on)\s+`([^`\n]+)`/i,
+           description,
+           capture: :all_but_first
+         ) do
+      [branch] -> String.trim(branch)
+      _ -> nil
+    end
+  end
+
+  def publication_base(%Issue{}), do: nil
 
   @spec phase_handoff(atom(), map()) :: String.t()
   def phase_handoff(:verification, context) when is_map(context) do
@@ -66,8 +87,9 @@ defmodule SymphonyElixir.TaskCapsule do
     Host verification result:
     #{render_verification(Map.get(context, :verification, %{}))}
 
-    Interpret this bounded result and inspect the local diff only where needed. Do not rerun the
-    final gate. Do not load publishing instructions yet.
+    Interpret this bounded result and inspect the local diff only where needed. Do not edit files,
+    fetch, commit, push, call GitHub APIs, or rerun the final gate. Do not load publishing
+    instructions yet. End after stating whether this exact verification result permits publication.
     """
     |> String.trim()
   end
@@ -77,6 +99,7 @@ defmodule SymphonyElixir.TaskCapsule do
     # Publish-or-block phase
 
     Verification status: #{get_in(context, [:verification, :status]) || "unknown"}
+    Pull request base: #{Map.get(context, :base_branch) || "repository default"}
     Changed paths:
     #{render_list(Map.get(context, :changed_paths, []))}
 
@@ -86,7 +109,7 @@ defmodule SymphonyElixir.TaskCapsule do
 
     If verification passed, publish exactly the changed paths with
     `/Users/Monsky/.codex-symphony/bin/symphony-git publish <conventional-commit-message> <path>...`,
-    then open or update the PR against the base branch required by the issue. If verification
+    then open or update the PR against the exact pull request base above. If verification
     failed or a true external blocker remains, preserve the workspace and report BLOCKED.
     Symphony will perform lifecycle labels, workpad evidence attachment, and final cleanup after
     the declared result.
@@ -108,6 +131,14 @@ defmodule SymphonyElixir.TaskCapsule do
     |> Enum.reject(&(&1 == ""))
     |> Enum.uniq()
     |> Enum.take(20)
+  end
+
+  defp implementation_criteria(description) do
+    description
+    |> section_items(["acceptance criteria"])
+    |> Enum.reject(fn criterion ->
+      Enum.any?(@publication_patterns, &String.match?(criterion, &1))
+    end)
   end
 
   defp allowed_files(description) do

@@ -216,7 +216,8 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              TaskCapsule.phase_handoff(:publication, %{
                changed_paths: diff.changed_paths,
-               verification: verification
+               verification: verification,
+               base_branch: TaskCapsule.publication_base(issue)
              }),
              issue,
              :publication,
