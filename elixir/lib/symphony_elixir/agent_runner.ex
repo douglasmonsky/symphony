@@ -193,7 +193,7 @@ defmodule SymphonyElixir.AgentRunner do
     with {:ok, implementation} <-
            run_phase(app_session, capsule, issue, :implementation, collector, recipient),
          :ok <- compact_phase(app_session, recipient, issue),
-         {:ok, diff} <- diff_summary(workspace),
+         {:ok, diff} <- diff_summary(workspace, TaskCapsule.publication_base(issue)),
          {:ok, verification} <-
            run_host_verification(
              workspace,
@@ -312,25 +312,61 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp declared_outcome(_message), do: :unknown
 
-  defp diff_summary(workspace) do
+  defp diff_summary(workspace, publication_base) do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
       {output, 0} ->
-        changed_paths =
+        worktree_paths =
           output
           |> String.split("\n", trim: true)
           |> Enum.map(&String.slice(&1, 3..-1//1))
           |> Enum.reject(&is_nil/1)
 
+        committed_paths = committed_paths(workspace, publication_base)
+        changed_paths = Enum.uniq(worktree_paths ++ committed_paths)
+
         {:ok,
          %{
            changed_paths: changed_paths,
-           status: if(changed_paths == [], do: "clean", else: "dirty")
+           status: diff_status(worktree_paths, committed_paths)
          }}
 
       {output, status} ->
         {:error, {:git_status_failed, status, String.slice(output, 0, 1_000)}}
     end
   end
+
+  defp committed_paths(_workspace, nil), do: []
+
+  defp committed_paths(workspace, publication_base) do
+    ["origin/#{publication_base}", publication_base]
+    |> Enum.find_value([], fn candidate ->
+      case System.cmd(
+             "git",
+             ["rev-parse", "--verify", "--quiet", candidate],
+             cd: workspace,
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} -> git_changed_paths(workspace, candidate)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp git_changed_paths(workspace, base_ref) do
+    case System.cmd(
+           "git",
+           ["diff", "--name-only", "#{base_ref}...HEAD", "--"],
+           cd: workspace,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} -> String.split(output, "\n", trim: true)
+      _ -> []
+    end
+  end
+
+  defp diff_status([_ | _], _committed_paths), do: "dirty"
+  defp diff_status([], [_ | _]), do: "committed"
+  defp diff_status([], []), do: "clean"
 
   defp collect_agent_message(collector, message) do
     case completed_agent_message(message) do
