@@ -239,6 +239,29 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:worker_host_wait, issue_id, waiting?}, %{running: running} = state)
+      when is_binary(issue_id) and is_boolean(waiting?) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated =
+          if waiting? do
+            running_entry
+            |> Map.put(:host_waiting, true)
+            |> Map.put(:host_wait_started_at, DateTime.utc_now())
+          else
+            running_entry
+            |> Map.put(:host_waiting, false)
+            |> Map.delete(:host_wait_started_at)
+          end
+
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
   def handle_info(
         {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
         %{running: running} = state
@@ -698,7 +721,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
-    if Map.has_key?(state.blocked, issue_id) do
+    if Map.has_key?(state.blocked, issue_id) or Map.get(running_entry, :host_waiting, false) do
       state
     else
       restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms)
@@ -1540,6 +1563,7 @@ defmodule SymphonyElixir.Orchestrator do
           phase_resumptions: Map.get(metadata, :phase_resumptions, %{}),
           compaction_count: Map.get(metadata, :compaction_count, 0),
           circuit_warnings: Map.get(metadata, :circuit_warnings, []),
+          host_waiting: Map.get(metadata, :host_waiting, false),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,

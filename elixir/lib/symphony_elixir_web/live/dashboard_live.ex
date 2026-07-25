@@ -290,6 +290,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <.issue_identifier identifier={@entry.issue_identifier} url={@entry.issue_url} />
           <span class={state_badge_class(@entry.state)}><%= @entry.state %></span>
           <span class="state-badge state-badge-phase"><%= phase_label(@entry.phase) %></span>
+          <span :if={@entry.host_waiting} class="state-badge state-badge-phase">
+            Host command running
+          </span>
         </div>
         <span class="task-preview"><%= @entry.last_message || "Waiting for agent activity…" %></span>
         <div class="task-summary-meta numeric">

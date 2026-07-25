@@ -156,6 +156,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     send(pid, {:worker_phase, issue_id, :implementation})
     send(pid, {:worker_compacted, issue_id})
+    send(pid, {:worker_host_wait, issue_id, true})
+    assert :sys.get_state(pid).running[issue_id].host_waiting
+    assert %DateTime{} = :sys.get_state(pid).running[issue_id].host_wait_started_at
+    send(pid, {:worker_host_wait, issue_id, false})
 
     send(
       pid,
@@ -222,6 +226,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.phase_resumptions.implementation == 1
     assert snapshot_entry.compaction_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
+    refute :sys.get_state(pid).running[issue_id].host_waiting
+    refute Map.has_key?(:sys.get_state(pid).running[issue_id], :host_wait_started_at)
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = :sys.get_state(pid)
@@ -1053,6 +1059,73 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
     assert remaining_ms >= 9_500
     assert remaining_ms <= 10_500
+  end
+
+  test "orchestrator does not restart a worker awaiting a host command" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-host-wait"
+    orchestrator_name = Module.concat(__MODULE__, :HostWaitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-HOST-WAIT",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-HOST-WAIT",
+      dispatchable: true
+    }
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-host-wait-turn-host-wait",
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :turn_completed,
+      started_at: stale_activity_at,
+      host_waiting: true,
+      host_wait_started_at: stale_activity_at
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    assert Process.alive?(worker_pid)
+    assert state.running[issue_id].host_waiting
+    refute Map.has_key?(state.retry_attempts, issue_id)
+
+    send(worker_pid, :done)
   end
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do

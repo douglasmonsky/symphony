@@ -110,6 +110,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_phase(_recipient, _issue, _phase), do: :ok
 
+  defp send_host_wait(recipient, %Issue{id: issue_id}, waiting?)
+       when is_binary(issue_id) and is_pid(recipient) and is_boolean(waiting?) do
+    send(recipient, {:worker_host_wait, issue_id, waiting?})
+    :ok
+  end
+
+  defp send_host_wait(_recipient, _issue, _waiting?), do: :ok
+
   defp run_phased_execution(workspace, issue, codex_update_recipient, opts) do
     settings = Config.settings!().agent
     verification_command = settings.verification_command
@@ -187,13 +195,11 @@ defmodule SymphonyElixir.AgentRunner do
          :ok <- compact_phase(app_session, recipient, issue),
          {:ok, diff} <- diff_summary(workspace),
          {:ok, verification} <-
-           CommandWaiter.run(
+           run_host_verification(
              workspace,
-             pipeline.verification_command,
-             Keyword.merge(
-               [timeout_ms: pipeline.settings.verification_timeout_ms],
-               Keyword.get(pipeline.opts, :command_waiter_opts, [])
-             )
+             issue,
+             recipient,
+             pipeline
            ),
          {:ok, lifecycle} <- Lifecycle.record_verification(lifecycle, verification),
          {:ok, _interpretation} <-
@@ -246,6 +252,24 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp run_host_verification(workspace, issue, recipient, pipeline) do
+    send_worker_phase(recipient, issue, :verification)
+    send_host_wait(recipient, issue, true)
+
+    try do
+      CommandWaiter.run(
+        workspace,
+        pipeline.verification_command,
+        Keyword.merge(
+          [timeout_ms: pipeline.settings.verification_timeout_ms],
+          Keyword.get(pipeline.opts, :command_waiter_opts, [])
+        )
+      )
+    after
+      send_host_wait(recipient, issue, false)
     end
   end
 

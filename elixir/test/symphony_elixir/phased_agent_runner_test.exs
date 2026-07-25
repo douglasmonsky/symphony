@@ -137,10 +137,12 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
 
     updates = collect_updates([])
     assert Enum.count(updates, &match?({:phase, :implementation}, &1)) == 1
-    assert Enum.count(updates, &match?({:phase, :verification}, &1)) == 1
+    assert Enum.count(updates, &match?({:phase, :verification}, &1)) == 2
     assert Enum.count(updates, &match?({:phase, :publication}, &1)) == 1
     assert Enum.count(updates, &match?({:compacted}, &1)) == 2
     assert Enum.count(updates, &match?({:session_started, _}, &1)) == 3
+    assert Enum.count(updates, &match?({:host_wait, true}, &1)) == 1
+    assert Enum.count(updates, &match?({:host_wait, false}, &1)) == 1
 
     assert File.read!(Path.join(root, "verification.log")) == ""
 
@@ -164,6 +166,9 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
 
       {:worker_compacted, "7"} ->
         collect_updates([{:compacted} | acc])
+
+      {:worker_host_wait, "7", waiting?} ->
+        collect_updates([{:host_wait, waiting?} | acc])
 
       {:codex_worker_update, "7", %{event: :session_started, session_id: session_id}} ->
         collect_updates([{:session_started, session_id} | acc])

@@ -510,6 +510,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Usage by phase"
     assert html =~ "Resumptions"
     assert html =~ "Implementation"
+    assert html =~ "Host command running"
     assert html =~ "Docs-only run token warning."
     assert html =~ "Run history"
     assert html =~ "MT-HISTORY-BLOCKED"
@@ -700,6 +701,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           },
           phase_resumptions: %{implementation: 1},
           compaction_count: 0,
+          host_waiting: true,
           circuit_warnings: ["Docs-only run token warning."],
           started_at: DateTime.utc_now()
         }

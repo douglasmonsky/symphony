@@ -134,7 +134,8 @@ defmodule SymphonyElixirWeb.Presenter do
       phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
       phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
       compaction_count: Map.get(entry, :compaction_count, 0),
-      circuit_warnings: Map.get(entry, :circuit_warnings, [])
+      circuit_warnings: Map.get(entry, :circuit_warnings, []),
+      host_waiting: Map.get(entry, :host_waiting, false)
     }
   end
 
