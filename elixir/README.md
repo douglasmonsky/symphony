@@ -328,6 +328,7 @@ The observability UI now runs on a minimal Phoenix stack:
   metadata, blocked reasons, and input split into new context, cached context, and output tokens.
   Phased runs also show the current phase, per-phase token totals, model resumptions, compaction
   count, and token-guardrail warnings. Running-row expansion survives LiveView refresh ticks.
+  Dashboard refreshes consume host-emitted state and do not resume the model.
   Completed and blocked outcomes persist across service restarts; raw tool inputs and outputs are
   not retained in dashboard history.
 - Account limits are polled once per minute through Codex app-server's
