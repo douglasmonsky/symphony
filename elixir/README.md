@@ -256,6 +256,9 @@ codex:
   configured `$VAR` token names from the Codex child, and leaves raw tool access limited by that
   token's GitHub permissions.
 
+For an isolated, explicitly eligible personal-fork pilot, follow the
+[GitHub dogfood lane](docs/github_dogfood.md) operator guide.
+
 ### Jira Cloud adapter
 
 - Config: use `tracker.kind: jira` with provider `base_url`, `email`, `api_token`, and required
