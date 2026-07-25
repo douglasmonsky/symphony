@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
     CompletedRunStore,
     Config,
     StatusDashboard,
+    TaskCapsule,
     TokenCircuitBreaker,
     Tracker,
     Workspace
@@ -1834,7 +1835,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp evaluate_token_circuit(state, issue_id, running_entry) do
-    files_changed? = workspace_files_changed?(Map.get(running_entry, :workspace_path))
+    files_changed? =
+      workspace_has_deliverable_change?(
+        Map.get(running_entry, :workspace_path),
+        Map.get(running_entry, :issue)
+      )
 
     case TokenCircuitBreaker.evaluate(running_entry, Config.settings!().agent, files_changed?) do
       {:continue, warnings} ->
@@ -1862,14 +1867,60 @@ defmodule SymphonyElixir.Orchestrator do
       min(settings.token_warn_total, settings.token_pause_no_change)
   end
 
-  defp workspace_files_changed?(workspace) when is_binary(workspace) do
+  @doc false
+  @spec workspace_has_deliverable_change_for_test(Path.t(), Issue.t()) :: boolean()
+  def workspace_has_deliverable_change_for_test(workspace, %Issue{} = issue) do
+    workspace_has_deliverable_change?(workspace, issue)
+  end
+
+  defp workspace_has_deliverable_change?(workspace, %Issue{} = issue)
+       when is_binary(workspace) do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
-      {output, 0} -> String.trim(output) != ""
+      {output, 0} ->
+        String.trim(output) != "" or branch_differs_from_publication_base?(workspace, issue)
+
+      _ ->
+        false
+    end
+  end
+
+  defp workspace_has_deliverable_change?(_workspace, _issue), do: false
+
+  defp branch_differs_from_publication_base?(workspace, issue) do
+    with base when is_binary(base) <- TaskCapsule.publication_base(issue),
+         {:ok, base_ref} <- resolve_git_ref(workspace, base) do
+      case System.cmd(
+             "git",
+             ["diff", "--quiet", "#{base_ref}...HEAD", "--"],
+             cd: workspace,
+             stderr_to_stdout: true
+           ) do
+        {_output, 1} -> true
+        _ -> false
+      end
+    else
       _ -> false
     end
   end
 
-  defp workspace_files_changed?(_workspace), do: false
+  defp resolve_git_ref(workspace, base) do
+    ["origin/#{base}", base]
+    |> Enum.find_value(fn candidate ->
+      case System.cmd(
+             "git",
+             ["rev-parse", "--verify", "--quiet", candidate],
+             cd: workspace,
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} -> {:ok, candidate}
+        _ -> nil
+      end
+    end)
+    |> case do
+      {:ok, _ref} = result -> result
+      nil -> {:error, :base_ref_not_found}
+    end
+  end
 
   defp cleanup_circuit_lifecycle(%{issue: %Issue{} = issue}, reason) do
     Task.start(fn ->

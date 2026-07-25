@@ -1,7 +1,9 @@
 defmodule SymphonyElixir.TokenCircuitBreakerTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.Orchestrator
   alias SymphonyElixir.TokenCircuitBreaker
+  alias SymphonyElixir.Tracker.Issue
 
   @settings %{
     token_warn_total: 250_000,
@@ -64,6 +66,41 @@ defmodule SymphonyElixir.TokenCircuitBreakerTest do
              entry
              |> Map.put(:compaction_count, 1)
              |> TokenCircuitBreaker.evaluate(@settings, true)
+  end
+
+  test "recognizes a committed deliverable change against the declared publication base" do
+    workspace =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-token-circuit-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn -> File.rm_rf(workspace) end)
+    File.mkdir_p!(workspace)
+    git!(workspace, ["init", "-b", "main"])
+    git!(workspace, ["config", "user.name", "Test User"])
+    git!(workspace, ["config", "user.email", "test@example.com"])
+    File.write!(Path.join(workspace, "README.md"), "# Test\n")
+    git!(workspace, ["add", "README.md"])
+    git!(workspace, ["commit", "-m", "initial"])
+    git!(workspace, ["branch", "release/docs"])
+    git!(workspace, ["switch", "-c", "codex/docs"])
+    File.write!(Path.join(workspace, "README.md"), "# Test\n\nDocumented.\n")
+    git!(workspace, ["add", "README.md"])
+    git!(workspace, ["commit", "-m", "docs: update readme"])
+
+    issue = %Issue{
+      id: "6",
+      identifier: "GH-6",
+      title: "Document behavior",
+      description: "Open the pull request against `release/docs`."
+    }
+
+    assert Orchestrator.workspace_has_deliverable_change_for_test(workspace, issue)
+  end
+
+  defp git!(workspace, args) do
+    assert {_output, 0} = System.cmd("git", args, cd: workspace, stderr_to_stdout: true)
   end
 
   defp entry(values) do
