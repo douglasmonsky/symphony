@@ -83,6 +83,26 @@ defmodule SymphonyElixir.GitHub.Lifecycle do
 
   def record_verification(context, _verification), do: {:ok, context}
 
+  @spec record_delivery(context(), map()) :: {:ok, context()} | {:error, term()}
+  def record_delivery(%{enabled: true} = context, delivery) when is_map(delivery) do
+    body =
+      context.workpad_body <>
+        """
+
+
+        ### Host delivery
+
+        - Pull request: [##{delivery.number}](#{delivery.url})
+        - Branch: `#{delivery.branch}`
+        - Base: `#{delivery.base}`
+        - Changed paths: #{join_or_none(delivery.changed_paths)}
+        """
+
+    update_workpad(context, body)
+  end
+
+  def record_delivery(context, _delivery), do: {:ok, context}
+
   @spec finish(context(), :ready | :blocked, String.t()) :: {:ok, context()} | {:error, term()}
   def finish(%{enabled: true} = context, outcome, summary)
       when outcome in [:ready, :blocked] and is_binary(summary) do

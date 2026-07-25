@@ -57,7 +57,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
                 *'README.md'*) ;;
                 *) exit 10 ;;
               esac
-              text='published scoped change SYMPHONY_OUTCOME: READY'
+              text='SYMPHONY_DELIVERY: {\\\"outcome\\\":\\\"ready\\\",\\\"commit_message\\\":\\\"docs: prove host delivery\\\",\\\"pr_title\\\":\\\"Prove host delivery\\\",\\\"summary\\\":\\\"Move deterministic delivery into Symphony.\\\"}'
             fi
             printf '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"%s"}}}\n' "$text"
             printf '%s\n' '{"method":"turn/completed"}'
@@ -72,6 +72,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: workspaces,
       hook_after_create: "git clone #{source} .",
+      tracker_provider: %{"delivery_base_ref" => "release/docs"},
       codex_command: "#{fake_codex} app-server",
       phased_execution: true,
       verification_command: "test ! -t 1 && test \"$COLUMNS\" = \"160\" && git diff --check",
@@ -110,6 +111,17 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
                  "html_url" => "https://github.com/acme/repo/pull/9"
                }
              ]
+           }}
+
+        method == "PATCH" and String.ends_with?(path, "/pulls/9") ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{
+               "number" => 9,
+               "state" => "open",
+               "html_url" => "https://github.com/acme/repo/pull/9"
+             }
            }}
 
         method == "PATCH" ->
@@ -163,6 +175,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
            )
 
     assert Enum.any?(updates, &match?({:github, "GET", "/repos/acme/repo/pulls", _}, &1))
+    assert Enum.any?(updates, &match?({:github, "PATCH", "/repos/acme/repo/pulls/9", _}, &1))
 
     assert Enum.any?(updates, fn
              {:github, "POST", path, _body} -> String.ends_with?(path, "/labels")

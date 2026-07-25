@@ -7,6 +7,7 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.CommandWaiter
   alias SymphonyElixir.Config
+  alias SymphonyElixir.GitHub.Delivery
   alias SymphonyElixir.GitHub.Lifecycle
   alias SymphonyElixir.PromptBuilder
   alias SymphonyElixir.TaskCapsule
@@ -190,10 +191,11 @@ defmodule SymphonyElixir.AgentRunner do
         attempt: Keyword.get(pipeline.opts, :attempt)
       )
 
-    with {:ok, implementation} <-
+    with {:ok, publication_base} <- publication_base(issue),
+         {:ok, implementation} <-
            run_phase(app_session, capsule, issue, :implementation, collector, recipient),
          :ok <- compact_phase(app_session, recipient, issue),
-         {:ok, diff} <- diff_summary(workspace, TaskCapsule.publication_base(issue)),
+         {:ok, diff} <- diff_summary(workspace, publication_base),
          {:ok, verification} <-
            run_host_verification(
              workspace,
@@ -223,14 +225,23 @@ defmodule SymphonyElixir.AgentRunner do
              TaskCapsule.phase_handoff(:publication, %{
                changed_paths: diff.changed_paths,
                verification: verification,
-               base_branch: TaskCapsule.publication_base(issue)
+               base_branch: publication_base
              }),
              issue,
              :publication,
              collector,
              recipient
            ) do
-      finalize_phased_run(lifecycle, verification, publication)
+      finalize_phased_run(
+        lifecycle,
+        issue,
+        workspace,
+        verification,
+        diff,
+        publication,
+        publication_base,
+        pipeline.opts
+      )
     end
   end
 
@@ -273,44 +284,109 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp finalize_phased_run(lifecycle, verification, publication) do
-    declared_outcome = declared_outcome(publication.last_message)
+  defp finalize_phased_run(
+         lifecycle,
+         issue,
+         workspace,
+         verification,
+         diff,
+         publication,
+         publication_base,
+         opts
+       ) do
+    case Delivery.parse_declaration(publication.last_message) do
+      {:ok, declaration} ->
+        finalize_declared_delivery(
+          lifecycle,
+          issue,
+          workspace,
+          verification,
+          diff,
+          declaration,
+          publication_base,
+          opts
+        )
 
-    outcome =
-      cond do
-        verification.status != :passed -> :blocked
-        declared_outcome == :blocked -> :blocked
-        declared_outcome == :ready -> published_outcome(lifecycle)
-        true -> :blocked
+      {:error, reason} ->
+        finish_blocked(lifecycle, "Invalid delivery declaration: #{inspect(reason)}")
+    end
+  end
+
+  defp finalize_declared_delivery(
+         lifecycle,
+         _issue,
+         _workspace,
+         _verification,
+         _diff,
+         %{outcome: :blocked, summary: summary},
+         _publication_base,
+         _opts
+       ) do
+    finish_blocked(lifecycle, summary)
+  end
+
+  defp finalize_declared_delivery(
+         lifecycle,
+         issue,
+         workspace,
+         verification,
+         diff,
+         %{outcome: :ready} = declaration,
+         publication_base,
+         opts
+       ) do
+    delivery_opts = [
+      expected_base: publication_base,
+      authorized_paths: TaskCapsule.authorized_paths(issue)
+    ]
+
+    delivery_opts =
+      case Keyword.get(opts, :delivery_command) do
+        command when is_function(command, 3) -> Keyword.put(delivery_opts, :command, command)
+        _ -> delivery_opts
       end
 
-    summary =
-      case outcome do
-        :ready -> "Verification passed and an open pull request was found."
-        :blocked -> "Run stopped without a verified ready-for-review declaration."
-      end
-
-    with {:ok, _lifecycle} <- Lifecycle.finish(lifecycle, outcome, summary) do
+    with {:ok, delivery} <-
+           Delivery.deliver(
+             lifecycle,
+             issue,
+             workspace,
+             verification,
+             diff,
+             declaration,
+             delivery_opts
+           ),
+         {:ok, lifecycle} <- Lifecycle.record_delivery(lifecycle, delivery),
+         {:ok, _lifecycle} <-
+           Lifecycle.finish(
+             lifecycle,
+             :ready,
+             "Verification passed and PR ##{delivery.number} is ready for human review."
+           ) do
       :ok
+    else
+      {:error, reason} ->
+        finish_blocked(lifecycle, "Host delivery failed: #{inspect(reason)}")
     end
   end
 
-  defp published_outcome(lifecycle) do
-    case Lifecycle.find_pull_request(lifecycle) do
-      {:ok, %{} = _pull_request} -> :ready
-      _ -> :blocked
-    end
+  defp finish_blocked(lifecycle, summary) do
+    with {:ok, _lifecycle} <- Lifecycle.finish(lifecycle, :blocked, summary), do: :ok
   end
 
-  defp declared_outcome(message) when is_binary(message) do
-    cond do
-      String.contains?(message, "SYMPHONY_OUTCOME: READY") -> :ready
-      String.contains?(message, "SYMPHONY_OUTCOME: BLOCKED") -> :blocked
-      true -> :unknown
+  defp publication_base(issue) do
+    configured_base =
+      Config.settings!().tracker.provider
+      |> Map.get("delivery_base_ref", "main")
+      |> to_string()
+      |> String.trim()
+
+    case TaskCapsule.publication_base(issue) do
+      nil -> {:ok, configured_base}
+      ^configured_base -> {:ok, configured_base}
+      _other -> {:error, :publication_base_mismatch}
     end
   end
-
-  defp declared_outcome(_message), do: :unknown
 
   defp diff_summary(workspace, publication_base) do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
@@ -334,8 +410,6 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, {:git_status_failed, status, String.slice(output, 0, 1_000)}}
     end
   end
-
-  defp committed_paths(_workspace, nil), do: []
 
   defp committed_paths(workspace, publication_base) do
     ["origin/#{publication_base}", publication_base]

@@ -189,6 +189,11 @@ Notes:
   full output under the host temporary `symphony-verification/` artifact directory, and
   sends Codex only a bounded result of at most 20 relevant lines. `CI=1`, `COLUMNS=160`,
   `LINES=50`, and `TERM=dumb` make the validation environment deterministic.
+- The publication model phase returns one `SYMPHONY_DELIVERY` JSON decision and does not run
+  tools. For a ready decision, the host validates the passing artifact, configured base,
+  current branch, and exact issue-authorized paths before committing or resuming, pushing,
+  and creating or updating the PR. Repeating the transaction updates the same PR without
+  creating another commit.
 - Phased workers receive a compact task capsule instead of overlapping workflow, issue,
   repository, workpad, and API payloads. Repository guidance is loaded before editing;
   publishing or blocked-state instructions are loaded only when needed.
