@@ -346,9 +346,6 @@ defmodule SymphonyElixir.RunTimeline do
     |> Kernel.<>("…")
   end
 
-  defp truncate_utf8(<<>>, _remaining, accumulator),
-    do: accumulator |> Enum.reverse() |> IO.iodata_to_binary()
-
   defp truncate_utf8(<<codepoint::utf8, rest::binary>>, remaining, accumulator) do
     encoded = <<codepoint::utf8>>
 

@@ -551,6 +551,11 @@ defmodule SymphonyElixir.Orchestrator do
 
         terminate_running_issue(state, issue.id, true)
 
+      lifecycle_finish_in_progress?(state, issue.id) ->
+        Logger.info("Issue entered a host-declared lifecycle outcome: #{issue_context(issue)}; waiting for the active agent to finish")
+
+        refresh_running_issue_state(state, issue)
+
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
@@ -567,6 +572,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp lifecycle_finish_in_progress?(%State{running: running}, issue_id) do
+    Map.get(running, issue_id, %{})
+    |> Map.get(:lifecycle_finishing)
+    |> then(&(&1 in [:ready, :blocked]))
+  end
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1540,6 +1551,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_call(
+        {:worker_lifecycle_finishing, issue_id, outcome},
+        _from,
+        %State{running: running} = state
+      )
+      when is_binary(issue_id) and outcome in [:ready, :blocked] do
+    updated_running =
+      case Map.get(running, issue_id) do
+        nil -> running
+        running_entry -> Map.put(running, issue_id, Map.put(running_entry, :lifecycle_finishing, outcome))
+      end
+
+    {:reply, :ok, %{state | running: updated_running}}
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()

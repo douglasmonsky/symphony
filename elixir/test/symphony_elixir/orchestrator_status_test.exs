@@ -21,6 +21,85 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :stop)
   end
 
+  test "host lifecycle transition is archived once after reconciliation precedes task down" do
+    issue_id = "issue-lifecycle-race"
+    process_ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :LifecycleRaceOrchestrator)
+
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "GH-15",
+      title: "Lifecycle race",
+      description: "Preserve terminal history",
+      state: "open",
+      url: "https://example.org/issues/GH-15",
+      labels: ["agent-ready"],
+      dispatchable: true
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: process_ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "session-lifecycle-race",
+      turn_count: 1,
+      agent_messages: ["Declared blocked outcome."],
+      phase_token_usage: %{},
+      phase_resumptions: %{},
+      timeline: [],
+      timeline_activity: %{},
+      codex_input_tokens: 10,
+      codex_cached_input_tokens: 8,
+      codex_output_tokens: 2,
+      codex_total_tokens: 12,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | running: %{issue_id => running_entry},
+          claimed: MapSet.put(state.claimed, issue_id)
+      }
+    end)
+
+    assert :ok ==
+             GenServer.call(pid, {:worker_lifecycle_finishing, issue_id, :blocked})
+
+    transitioned_issue = %{
+      issue
+      | labels: ["agent-blocked"],
+        dispatchable: true
+    }
+
+    reconciled_state =
+      Orchestrator.reconcile_issue_states_for_test(
+        [transitioned_issue],
+        :sys.get_state(pid)
+      )
+
+    assert Map.has_key?(reconciled_state.running, issue_id)
+    :sys.replace_state(pid, fn _state -> reconciled_state end)
+
+    send(pid, {:DOWN, process_ref, :process, self(), :normal})
+    _snapshot = GenServer.call(pid, :snapshot)
+    completed_state = :sys.get_state(pid)
+
+    assert [%{issue_id: ^issue_id, run_id: "session-lifecycle-race"}] =
+             completed_state.completed_runs
+
+    send(pid, {:DOWN, process_ref, :process, self(), :normal})
+    Process.sleep(20)
+    assert length(:sys.get_state(pid).completed_runs) == 1
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 

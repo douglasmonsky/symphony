@@ -894,6 +894,98 @@ defmodule SymphonyElixir.CoreTest do
     refute Process.alive?(agent_pid)
   end
 
+  test "reconcile preserves a running issue while a declared lifecycle outcome finishes" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_required_labels: ["agent-ready"]
+    )
+
+    Enum.each(["agent-blocked", "human-review"], fn outcome_label ->
+      issue_id = "issue-#{outcome_label}"
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: "GH-15",
+            issue: %Issue{
+              id: issue_id,
+              identifier: "GH-15",
+              state: "open",
+              labels: ["agent-ready"],
+              dispatchable: true
+            },
+            lifecycle_finishing: if(outcome_label == "human-review", do: :ready, else: :blocked),
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      transitioned_issue = %Issue{
+        id: issue_id,
+        identifier: "GH-15",
+        state: "open",
+        labels: [outcome_label],
+        dispatchable: false
+      }
+
+      updated_state =
+        Orchestrator.reconcile_issue_states_for_test([transitioned_issue], state)
+
+      assert Map.has_key?(updated_state.running, issue_id)
+      assert MapSet.member?(updated_state.claimed, issue_id)
+      assert Process.alive?(agent_pid)
+      assert updated_state.running[issue_id].issue.labels == [outcome_label]
+
+      send(agent_pid, :stop)
+    end)
+  end
+
+  test "reconcile does not trust manually applied outcome labels" do
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_required_labels: ["agent-ready"]
+    )
+
+    issue_id = "issue-manual-outcome-label"
+    agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "GH-15",
+          issue: %Issue{id: issue_id, identifier: "GH-15", state: "open"},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    manually_labeled_issue = %Issue{
+      id: issue_id,
+      identifier: "GH-15",
+      state: "open",
+      labels: ["agent-blocked"],
+      dispatchable: true
+    }
+
+    updated_state =
+      Orchestrator.reconcile_issue_states_for_test([manually_labeled_issue], state)
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    refute Process.alive?(agent_pid)
+  end
+
   test "reconcile releases a blocked issue when a required label is removed" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
 
