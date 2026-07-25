@@ -13,9 +13,13 @@ defmodule SymphonyElixir.TaskCapsuleTest do
       description: """
       Introductory prose that should not be replayed.
 
+      ## Objective
+      Explain how the host waits without replaying command output.
+
       ## Scope
       - Update `elixir/AGENTS.md`.
       - Update `elixir/README.md`.
+      - Add one concise sentence.
 
       ## Acceptance criteria
       - The two documents agree.
@@ -36,9 +40,11 @@ defmodule SymphonyElixir.TaskCapsuleTest do
         verification_command: "make -C elixir all"
       )
 
-    assert capsule =~ "Objective: Document waiter behavior"
+    assert capsule =~ "Objective: Explain how the host waits without replaying command output."
     assert capsule =~ "- elixir/AGENTS.md"
     assert capsule =~ "- elixir/README.md"
+    assert capsule =~ "Implementation constraints:"
+    assert capsule =~ "- Add one concise sentence."
     assert capsule =~ "- The two documents agree."
     assert capsule =~ "Verification:\n- make -C elixir all"
     assert capsule =~ "Branch: codex/gh-42"
@@ -53,6 +59,11 @@ defmodule SymphonyElixir.TaskCapsuleTest do
     default_capsule = TaskCapsule.build(issue, "/work/GH-42")
     assert default_capsule =~ "Branch: unknown"
     assert default_capsule =~ "repository-defined focused checks"
+
+    title_fallback =
+      TaskCapsule.build(%Issue{identifier: "GH-43", title: "Fallback objective"}, "/work/GH-43")
+
+    assert title_fallback =~ "Objective: Fallback objective"
     assert TaskCapsule.publication_base(%Issue{description: "No pull request base specified."}) == nil
     assert TaskCapsule.publication_base(%Issue{}) == nil
   end

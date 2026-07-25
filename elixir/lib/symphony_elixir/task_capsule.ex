@@ -21,12 +21,15 @@ defmodule SymphonyElixir.TaskCapsule do
     """
     # Autonomous task capsule
 
-    Objective: #{issue.title}
+    Objective: #{objective(description, issue.title)}
     Issue: #{issue.identifier} (#{issue.url || "no URL"})
     Attempt: #{attempt || 1}
 
     Allowed files:
     #{render_list(allowed_files(description))}
+
+    Implementation constraints:
+    #{render_list(section_items(description, ["scope"]))}
 
     Implementation acceptance criteria:
     #{render_list(implementation_criteria(description))}
@@ -139,6 +142,13 @@ defmodule SymphonyElixir.TaskCapsule do
     |> Enum.reject(fn criterion ->
       Enum.any?(@publication_patterns, &String.match?(criterion, &1))
     end)
+  end
+
+  defp objective(description, fallback) do
+    case section_items(description, ["objective"]) do
+      [] -> fallback
+      items -> Enum.join(items, " ")
+    end
   end
 
   defp allowed_files(description) do
