@@ -119,6 +119,21 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_host_wait(_recipient, _issue, _waiting?), do: :ok
 
+  defp mark_lifecycle_finishing(recipient, %Issue{id: issue_id}, outcome)
+       when is_binary(issue_id) and is_pid(recipient) and outcome in [:ready, :blocked] do
+    if recipient == self() do
+      :ok
+    else
+      try do
+        GenServer.call(recipient, {:worker_lifecycle_finishing, issue_id, outcome})
+      catch
+        :exit, reason -> {:error, {:lifecycle_marker_failed, reason}}
+      end
+    end
+  end
+
+  defp mark_lifecycle_finishing(_recipient, _issue, _outcome), do: :ok
+
   defp run_phased_execution(workspace, issue, codex_update_recipient, opts) do
     settings = Config.settings!().agent
     verification_command = settings.verification_command
@@ -159,7 +174,15 @@ defmodule SymphonyElixir.AgentRunner do
 
         case result do
           {:error, reason} = error ->
-            _ = Lifecycle.finish(lifecycle, :blocked, "Host pipeline failed: #{inspect(reason)}")
+            _ =
+              finish_lifecycle(
+                lifecycle,
+                issue,
+                codex_update_recipient,
+                :blocked,
+                "Host pipeline failed: #{inspect(reason)}"
+              )
+
             error
 
           other ->
@@ -167,7 +190,15 @@ defmodule SymphonyElixir.AgentRunner do
         end
       rescue
         exception ->
-          _ = Lifecycle.finish(lifecycle, :blocked, "Host pipeline crashed: #{Exception.message(exception)}")
+          _ =
+            finish_lifecycle(
+              lifecycle,
+              issue,
+              codex_update_recipient,
+              :blocked,
+              "Host pipeline crashed: #{Exception.message(exception)}"
+            )
+
           reraise exception, __STACKTRACE__
       end
     else
@@ -240,7 +271,7 @@ defmodule SymphonyElixir.AgentRunner do
         diff,
         publication,
         publication_base,
-        pipeline.opts
+        Keyword.put(pipeline.opts, :lifecycle_recipient, recipient)
       )
     end
   end
@@ -294,6 +325,8 @@ defmodule SymphonyElixir.AgentRunner do
          publication_base,
          opts
        ) do
+    recipient = Keyword.fetch!(opts, :lifecycle_recipient)
+
     case Delivery.parse_declaration(publication.last_message) do
       {:ok, declaration} ->
         finalize_declared_delivery(
@@ -308,21 +341,27 @@ defmodule SymphonyElixir.AgentRunner do
         )
 
       {:error, reason} ->
-        finish_blocked(lifecycle, "Invalid delivery declaration: #{inspect(reason)}")
+        finish_blocked(
+          lifecycle,
+          issue,
+          recipient,
+          "Invalid delivery declaration: #{inspect(reason)}"
+        )
     end
   end
 
   defp finalize_declared_delivery(
          lifecycle,
-         _issue,
+         issue,
          _workspace,
          _verification,
          _diff,
          %{outcome: :blocked, summary: summary},
          _publication_base,
-         _opts
+         opts
        ) do
-    finish_blocked(lifecycle, summary)
+    recipient = Keyword.fetch!(opts, :lifecycle_recipient)
+    finish_blocked(lifecycle, issue, recipient, summary)
   end
 
   defp finalize_declared_delivery(
@@ -335,6 +374,8 @@ defmodule SymphonyElixir.AgentRunner do
          publication_base,
          opts
        ) do
+    recipient = Keyword.fetch!(opts, :lifecycle_recipient)
+
     delivery_opts = [
       expected_base: publication_base,
       authorized_paths: TaskCapsule.authorized_paths(issue)
@@ -358,20 +399,34 @@ defmodule SymphonyElixir.AgentRunner do
            ),
          {:ok, lifecycle} <- Lifecycle.record_delivery(lifecycle, delivery),
          {:ok, _lifecycle} <-
-           Lifecycle.finish(
+           finish_lifecycle(
              lifecycle,
+             issue,
+             recipient,
              :ready,
              "Verification passed and PR ##{delivery.number} is ready for human review."
            ) do
       :ok
     else
       {:error, reason} ->
-        finish_blocked(lifecycle, "Host delivery failed: #{inspect(reason)}")
+        finish_blocked(lifecycle, issue, recipient, "Host delivery failed: #{inspect(reason)}")
     end
   end
 
-  defp finish_blocked(lifecycle, summary) do
-    with {:ok, _lifecycle} <- Lifecycle.finish(lifecycle, :blocked, summary), do: :ok
+  defp finish_blocked(lifecycle, issue, recipient, summary) do
+    with {:ok, _lifecycle} <-
+           finish_lifecycle(lifecycle, issue, recipient, :blocked, summary),
+         do: :ok
+  end
+
+  defp finish_lifecycle(%{enabled: true} = lifecycle, issue, recipient, outcome, summary) do
+    with :ok <- mark_lifecycle_finishing(recipient, issue, outcome) do
+      Lifecycle.finish(lifecycle, outcome, summary)
+    end
+  end
+
+  defp finish_lifecycle(lifecycle, _issue, _recipient, outcome, summary) do
+    Lifecycle.finish(lifecycle, outcome, summary)
   end
 
   defp publication_base(issue) do

@@ -179,6 +179,141 @@ defmodule SymphonyElixir.RunTimelineTest do
     refute inspect(entry.timeline) =~ "private change"
   end
 
+  test "normalizes malformed persisted records and activity" do
+    assert RunTimeline.decode_activity(nil) == %{}
+
+    assert RunTimeline.decode_activity(%{"future" => %{"inference_calls" => "bad"}}) == %{
+             intake: %{inference_calls: 0, tool_calls: 0}
+           }
+
+    assert [
+             %{
+               phase: :intake,
+               tokens: %{
+                 input_tokens: 0,
+                 cached_input_tokens: 0,
+                 uncached_input_tokens: 0,
+                 output_tokens: 0,
+                 total_tokens: 0
+               }
+             }
+           ] =
+             RunTimeline.decode([
+               %{
+                 kind: "inference",
+                 phase: "future",
+                 timestamp: nil,
+                 trigger: nil,
+                 tokens: "malformed"
+               }
+             ])
+  end
+
+  test "records fallback tool events with bounded metadata" do
+    timestamp = "2026-07-25T12:00:00Z"
+    long_name = String.duplicate("é", 200)
+
+    entry =
+      %{phase: :implementation}
+      |> RunTimeline.record(
+        %{event: :notification, timestamp: nil, payload: "malformed"},
+        zero_delta()
+      )
+      |> RunTimeline.record(
+        %{
+          event: :notification,
+          timestamp: timestamp,
+          payload: %{method: "item/completed", params: "malformed"}
+        },
+        zero_delta()
+      )
+      |> RunTimeline.record(
+        %{
+          event: :notification,
+          timestamp: timestamp,
+          payload: %{method: "item/completed", params: %{item: "malformed"}}
+        },
+        zero_delta()
+      )
+      |> RunTimeline.record(
+        %{
+          event: :notification,
+          timestamp: timestamp,
+          payload: %{
+            method: "item/completed",
+            params: %{item: %{type: "mcpToolCall", id: "fallback-status", status: nil}}
+          }
+        },
+        zero_delta()
+      )
+      |> RunTimeline.record(
+        %{
+          event: :tool_call_completed,
+          timestamp: timestamp,
+          payload: %{params: %{type: "mcpToolCall", status: nil, durationMs: 7}}
+        },
+        zero_delta()
+      )
+      |> RunTimeline.record(
+        %{
+          event: :tool_call_failed,
+          timestamp: nil,
+          payload: %{params: %{type: "mcpToolCall", name: long_name, status: ""}}
+        },
+        zero_delta()
+      )
+
+    assert [status_fallback, fallback, bounded] = entry.timeline
+    assert status_fallback.status == "completed"
+    assert fallback.tool_name == "tool"
+    assert fallback.status == "completed"
+    assert fallback.duration_ms == 7
+    assert fallback.timestamp == timestamp
+    assert bounded.status == "failed"
+    assert bounded.timestamp == nil
+    assert String.ends_with?(bounded.tool_name, "…")
+    assert byte_size(bounded.tool_name) <= 320
+  end
+
+  test "completing one tool preserves other running tool records" do
+    started = ~U[2026-07-25 12:00:00Z]
+
+    entry =
+      Enum.reduce(["first", "second"], %{phase: :implementation}, fn id, current ->
+        RunTimeline.record(
+          current,
+          %{
+            event: :notification,
+            timestamp: started,
+            payload: %{
+              method: "item/started",
+              params: %{item: %{id: id, type: "mcpToolCall", name: id}}
+            }
+          },
+          zero_delta()
+        )
+      end)
+
+    completed =
+      RunTimeline.record(
+        entry,
+        %{
+          event: :notification,
+          timestamp: DateTime.add(started, 1, :second),
+          payload: %{
+            method: "item/completed",
+            params: %{item: %{id: "first", type: "mcpToolCall", name: "first"}}
+          }
+        },
+        zero_delta()
+      )
+
+    assert Enum.map(completed.timeline, &{&1.tool_name, &1.status}) == [
+             {"first", "completed"},
+             {"second", "running"}
+           ]
+  end
+
   defp zero_delta do
     %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
   end
