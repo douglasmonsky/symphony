@@ -21,6 +21,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
     git!(source, ["config", "user.email", "test@example.com"])
     git!(source, ["add", "README.md"])
     git!(source, ["commit", "-m", "initial"])
+    git!(source, ["branch", "release/docs"])
 
     File.write!(
       fake_codex,
@@ -44,10 +45,18 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
             printf '{"id":3,"result":{"turn":{"id":"turn-%s"}}}\n' "$turns"
             if [ "$turns" -eq 1 ]; then
               printf '%s\n' 'host waiter proof' >> README.md
+              git config user.name 'Test Worker'
+              git config user.email 'worker@example.com'
+              git add README.md
+              git commit -m 'docs: prove committed handoff' >/dev/null
               text='implemented scoped change'
             elif [ "$turns" -eq 2 ]; then
               text='verification result interpreted'
             else
+              case "$line" in
+                *'README.md'*) ;;
+                *) exit 10 ;;
+              esac
               text='published scoped change SYMPHONY_OUTCOME: READY'
             fi
             printf '{"method":"item/completed","params":{"item":{"type":"agentMessage","text":"%s"}}}\n' "$text"
@@ -121,6 +130,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
 
       ## Acceptance criteria
       - Explain that verification is awaited by the host.
+      Open the pull request against `release/docs`.
       """,
       state: "open",
       url: "https://github.com/acme/repo/issues/7",
