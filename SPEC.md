@@ -1300,6 +1300,10 @@ Adapter output MUST satisfy Section 4.1.1. In addition:
 - Preserve provider spelling in `state`, but trim and lowercase only for scheduler comparisons.
 - `blocked_by` is best-effort metadata; adapters MUST NOT invent blocker semantics they cannot
   represent reliably.
+- The GitHub adapter MAY populate `blocked_by` from an explicit
+  `Symphony-Depends-On: #<issue-number>` issue-body line. That dependency is resolved only when
+  the predecessor's Symphony delivery pull request is merged into the configured
+  `tracker.provider.delivery_base_ref`; ordering or issue closure alone is insufficient.
 - `dispatchable` MUST be explicit. It is `true` only when provider-specific eligibility checks
   pass; the generic scheduler never tries to reconstruct those checks from `native_ref`.
 - `native_ref` MUST be null or a JSON-safe object containing only non-secret values safe to expose

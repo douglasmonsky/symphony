@@ -11,6 +11,8 @@ defmodule SymphonyElixir.GitHub.Client do
   @api_version "2022-11-28"
   @page_size 100
   @user_agent "symphony"
+  @default_delivery_base_ref "main"
+  @dependency_pattern ~r/^\s*Symphony-Depends-On:\s*#(?<number>[1-9]\d*)\s*$/im
 
   @spec validate_settings(map()) :: :ok | {:error, term()}
   def validate_settings(tracker_settings) do
@@ -52,6 +54,10 @@ defmodule SymphonyElixir.GitHub.Client do
   def normalize_issue_for_test(issue, repo) when is_map(issue) and is_binary(repo) do
     normalize_issue(issue, repo)
   end
+
+  @doc false
+  @spec dependency_number_for_test(String.t() | nil) :: pos_integer() | nil
+  def dependency_number_for_test(description), do: dependency_number(description)
 
   @doc false
   @spec fetch_issues_by_states_for_test([String.t()], map(), function()) ::
@@ -121,14 +127,21 @@ defmodule SymphonyElixir.GitHub.Client do
       updated_acc = [issues | acc]
 
       if length(payload) < @page_size do
-        {:ok, updated_acc |> Enum.reverse() |> List.flatten()}
+        updated_acc
+        |> Enum.reverse()
+        |> List.flatten()
+        |> resolve_delivery_dependencies(settings, request_fun)
       else
         do_fetch_pages(settings, state_query, requested_states, page + 1, request_fun, updated_acc)
       end
     end
   end
 
-  defp fetch_issue_ids([], _settings, _request_fun, acc), do: {:ok, Enum.reverse(acc)}
+  defp fetch_issue_ids([], settings, request_fun, acc) do
+    acc
+    |> Enum.reverse()
+    |> resolve_delivery_dependencies(settings, request_fun)
+  end
 
   defp fetch_issue_ids([id | rest], settings, request_fun, acc) do
     with {:ok, issue_number} <- parse_issue_number(id),
@@ -199,6 +212,143 @@ defmodule SymphonyElixir.GitHub.Client do
   end
 
   defp normalize_issue(_issue, _repo), do: nil
+
+  defp resolve_delivery_dependencies(issues, settings, request_fun) do
+    issues_by_number = Map.new(issues, &{&1.id, &1})
+
+    Enum.reduce_while(issues, {:ok, []}, fn issue, {:ok, acc} ->
+      case resolve_delivery_dependency(issue, issues_by_number, settings, request_fun) do
+        {:ok, resolved_issue} -> {:cont, {:ok, [resolved_issue | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, resolved} -> {:ok, Enum.reverse(resolved)}
+      error -> error
+    end
+  end
+
+  defp resolve_delivery_dependency(issue, issues_by_number, settings, request_fun) do
+    case dependency_number(issue.description) do
+      nil ->
+        {:ok, issue}
+
+      dependency_number ->
+        with {:ok, satisfied?} <-
+               delivery_dependency_satisfied?(
+                 dependency_number,
+                 issues_by_number,
+                 settings,
+                 request_fun
+               ) do
+          {:ok, apply_delivery_dependency(issue, dependency_number, settings, satisfied?)}
+        end
+    end
+  end
+
+  defp apply_delivery_dependency(issue, _dependency_number, _settings, true), do: issue
+
+  defp apply_delivery_dependency(issue, dependency_number, settings, false) do
+    blocker = %{
+      id: Integer.to_string(dependency_number),
+      identifier: "GH-#{dependency_number}",
+      state: "awaiting merged delivery into #{settings.delivery_base_ref}"
+    }
+
+    %{issue | blocked_by: [blocker], dispatchable: false}
+  end
+
+  defp delivery_dependency_satisfied?(dependency_number, issues_by_number, settings, request_fun) do
+    case Map.get(issues_by_number, Integer.to_string(dependency_number)) do
+      %Issue{} = dependency ->
+        resolve_reviewable_dependency(dependency, dependency_number, settings, request_fun)
+
+      nil ->
+        with {:ok, dependency} <-
+               fetch_dependency_issue(dependency_number, settings, request_fun) do
+          resolve_reviewable_dependency(dependency, dependency_number, settings, request_fun)
+        end
+    end
+  end
+
+  defp resolve_reviewable_dependency(nil, dependency_number, settings, request_fun) do
+    merged_delivery_pull?(dependency_number, settings, request_fun)
+  end
+
+  defp resolve_reviewable_dependency(dependency, dependency_number, settings, request_fun) do
+    if delivery_reviewable?(dependency) do
+      merged_delivery_pull?(dependency_number, settings, request_fun)
+    else
+      {:ok, false}
+    end
+  end
+
+  defp fetch_dependency_issue(dependency_number, settings, request_fun) do
+    with {:ok, payload} <-
+           request_with_settings(
+             "GET",
+             repository_issue_path(settings, dependency_number),
+             %{},
+             nil,
+             settings,
+             request_fun,
+             true
+           ) do
+      case payload do
+        :not_found -> {:ok, nil}
+        %{} = issue -> {:ok, normalize_issue(issue, settings.repo)}
+        _ -> {:error, :github_unknown_payload}
+      end
+    end
+  end
+
+  defp delivery_reviewable?(%Issue{state: "closed"}), do: true
+
+  defp delivery_reviewable?(%Issue{labels: labels}) when is_list(labels) do
+    "human-review" in labels
+  end
+
+  defp delivery_reviewable?(%Issue{}), do: false
+
+  defp merged_delivery_pull?(dependency_number, settings, request_fun) do
+    owner = settings.repo |> String.split("/", parts: 2) |> hd()
+    head_ref = "codex/symphony-gh-#{dependency_number}"
+
+    params = %{
+      "state" => "closed",
+      "head" => "#{owner}:#{head_ref}",
+      "base" => settings.delivery_base_ref,
+      "per_page" => @page_size
+    }
+
+    with {:ok, payload} <-
+           request_with_settings(
+             "GET",
+             repository_pulls_path(settings),
+             params,
+             nil,
+             settings,
+             request_fun,
+             false
+           ),
+         true <- is_list(payload) or {:error, :github_unknown_payload} do
+      {:ok,
+       Enum.any?(payload, fn pull ->
+         present_string?(pull["merged_at"]) and
+           get_in(pull, ["head", "ref"]) == head_ref and
+           get_in(pull, ["base", "ref"]) == settings.delivery_base_ref
+       end)}
+    end
+  end
+
+  defp dependency_number(description) when is_binary(description) do
+    case Regex.named_captures(@dependency_pattern, description) do
+      %{"number" => number} -> String.to_integer(number)
+      _ -> nil
+    end
+  end
+
+  defp dependency_number(_description), do: nil
 
   defp native_ref(issue, repo) do
     %{
@@ -282,13 +432,32 @@ defmodule SymphonyElixir.GitHub.Client do
     api_url = provider["api_url"] || @default_api_url
     repo = resolve_setting(provider["repo"], System.get_env("GITHUB_REPO"))
     token = resolve_setting(provider["token"], System.get_env("GITHUB_TOKEN"))
+    delivery_base_ref = Map.get(provider, "delivery_base_ref", @default_delivery_base_ref)
 
     cond do
-      not valid_api_url?(api_url) -> {:error, :invalid_github_api_url}
-      not present_string?(repo) -> {:error, :missing_github_repo}
-      not valid_repo?(repo) -> {:error, :invalid_github_repo}
-      not present_string?(token) -> {:error, :missing_github_token}
-      true -> {:ok, %{api_url: String.trim_trailing(api_url, "/"), repo: repo, token: token}}
+      not valid_api_url?(api_url) ->
+        {:error, :invalid_github_api_url}
+
+      not present_string?(repo) ->
+        {:error, :missing_github_repo}
+
+      not valid_repo?(repo) ->
+        {:error, :invalid_github_repo}
+
+      not present_string?(token) ->
+        {:error, :missing_github_token}
+
+      not present_string?(delivery_base_ref) ->
+        {:error, :invalid_github_delivery_base_ref}
+
+      true ->
+        {:ok,
+         %{
+           api_url: String.trim_trailing(api_url, "/"),
+           repo: repo,
+           token: token,
+           delivery_base_ref: String.trim(delivery_base_ref)
+         }}
     end
   end
 
@@ -340,6 +509,8 @@ defmodule SymphonyElixir.GitHub.Client do
 
   defp repository_issue_path(settings, issue_number),
     do: "#{repository_issues_path(settings)}/#{issue_number}"
+
+  defp repository_pulls_path(settings), do: "/repos/#{encoded_repo(settings.repo)}/pulls"
 
   defp encoded_repo(repo) do
     repo

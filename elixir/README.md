@@ -156,6 +156,11 @@ Notes:
 - `tracker.required_labels` is optional. When set, an issue must have every
   configured label to dispatch or continue running. Label matching ignores
   case and surrounding whitespace. A blank configured label matches no issue.
+- GitHub workflows may declare a delivery dependency with a line such as
+  `Symphony-Depends-On: #42` in the issue body. The dependent issue remains
+  non-dispatchable until the predecessor's `codex/symphony-gh-42` pull request is
+  merged into `tracker.provider.delivery_base_ref` (default: `main`). A predecessor
+  that has not reached `human-review` blocks without polling the pull-request API.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
