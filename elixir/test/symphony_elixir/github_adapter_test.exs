@@ -232,7 +232,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              )
   end
 
-  test "github_api preserves REST status and body while rejecting unsafe arguments" do
+  test "github_api projects REST responses while rejecting unsafe arguments" do
     test_pid = self()
     tracker_settings = tracker_settings()
 
@@ -257,6 +257,70 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert response["success"] == true
     assert Jason.decode!(response["output"]) == %{"status" => 201, "body" => %{"id" => 9}}
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
+
+    projected_issue =
+      GitHubAgentTool.execute(
+        "github_api",
+        %{"method" => "GET", "path" => "/repos/octo/repo/issues/42"},
+        github_client: fn _method, _path, _params, _body, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{
+               "number" => 42,
+               "state" => "open",
+               "title" => "large title not needed",
+               "body" => "large issue body not needed",
+               "user" => %{"login" => "octocat"},
+               "reactions" => %{"total_count" => 5},
+               "labels" => [%{"name" => "agent-ready", "color" => "blue"}]
+             }
+           }}
+        end
+      )
+
+    assert Jason.decode!(projected_issue["output"]) == %{
+             "status" => 200,
+             "body" => %{
+               "number" => 42,
+               "state" => "open",
+               "labels" => ["agent-ready"]
+             }
+           }
+
+    projected_pr =
+      GitHubAgentTool.execute(
+        "github_api",
+        %{"method" => "GET", "path" => "/repos/octo/repo/pulls?state=open"},
+        github_client: fn _method, _path, _params, _body, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: [
+               %{
+                 "number" => 9,
+                 "state" => "open",
+                 "draft" => true,
+                 "html_url" => "https://github.test/pr/9",
+                 "head" => %{"ref" => "codex/gh-42", "repo" => %{"full_name" => "octo/repo"}},
+                 "base" => %{"ref" => "main"},
+                 "user" => %{"login" => "octocat"}
+               }
+             ]
+           }}
+        end
+      )
+
+    assert Jason.decode!(projected_pr["output"])["body"] == [
+             %{
+               "number" => 9,
+               "state" => "open",
+               "draft" => true,
+               "html_url" => "https://github.test/pr/9",
+               "head" => %{"ref" => "codex/gh-42"},
+               "base" => %{"ref" => "main"}
+             }
+           ]
 
     failure =
       GitHubAgentTool.execute(
@@ -362,7 +426,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       )
 
     assert non_json_body["success"]
-    assert non_json_body["output"] =~ "#PID"
+    assert Jason.decode!(non_json_body["output"]) == %{"status" => 200, "body" => nil}
   end
 
   test "tracker binds GitHub tools and token env names from provider config" do

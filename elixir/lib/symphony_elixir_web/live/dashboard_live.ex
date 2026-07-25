@@ -289,6 +289,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <div class="task-identity">
           <.issue_identifier identifier={@entry.issue_identifier} url={@entry.issue_url} />
           <span class={state_badge_class(@entry.state)}><%= @entry.state %></span>
+          <span class="state-badge state-badge-phase"><%= phase_label(@entry.phase) %></span>
         </div>
         <span class="task-preview"><%= @entry.last_message || "Waiting for agent activity…" %></span>
         <div class="task-summary-meta numeric">
@@ -299,6 +300,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </summary>
       <div class="task-body">
         <.token_breakdown tokens={@entry.tokens} />
+        <.phase_breakdown
+          usage={@entry.phase_token_usage}
+          resumptions={@entry.phase_resumptions}
+          compaction_count={@entry.compaction_count}
+        />
+        <.circuit_warnings warnings={@entry.circuit_warnings} />
         <.agent_outputs messages={@entry.agent_messages} />
         <.detail_grid
           session_id={@entry.session_id}
@@ -335,6 +342,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
       </summary>
       <div class="task-body">
         <.token_breakdown tokens={@entry.tokens} />
+        <.phase_breakdown
+          usage={@entry.phase_token_usage}
+          resumptions={@entry.phase_resumptions}
+          compaction_count={@entry.compaction_count}
+        />
+        <.circuit_warnings warnings={@entry.circuit_warnings} />
         <.agent_outputs messages={@entry.agent_messages} />
         <div :if={@entry.error} class="message-panel">
           <h3>Blocked reason</h3>
@@ -374,6 +387,58 @@ defmodule SymphonyElixirWeb.DashboardLive do
         <strong class="numeric"><%= format_int(@tokens.total_tokens) %></strong>
       </div>
     </div>
+    """
+  end
+
+  attr(:usage, :list, required: true)
+  attr(:resumptions, :map, required: true)
+  attr(:compaction_count, :integer, required: true)
+
+  defp phase_breakdown(assigns) do
+    ~H"""
+    <section class="phase-panel" aria-label="Token usage by phase">
+      <div class="phase-panel-header">
+        <h3>Usage by phase</h3>
+        <span class="numeric"><%= @compaction_count %> compactions</span>
+      </div>
+      <div class="phase-table-wrap">
+        <table class="phase-table">
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>New</th>
+              <th>Cached</th>
+              <th>Output</th>
+              <th>Processed</th>
+              <th>Resumptions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr :for={phase <- @usage}>
+              <th><%= phase_label(phase.phase) %></th>
+              <td class="numeric"><%= format_int(phase.uncached_input_tokens) %></td>
+              <td class="numeric"><%= format_int(phase.cached_input_tokens) %></td>
+              <td class="numeric"><%= format_int(phase.output_tokens) %></td>
+              <td class="numeric"><%= format_int(phase.total_tokens) %></td>
+              <td class="numeric"><%= Map.get(@resumptions, phase.phase, 0) %></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    """
+  end
+
+  attr(:warnings, :list, required: true)
+
+  defp circuit_warnings(assigns) do
+    ~H"""
+    <section :if={@warnings != []} class="circuit-panel" aria-label="Token circuit breaker warnings">
+      <h3>Token guardrails</h3>
+      <ul>
+        <li :for={warning <- @warnings}><%= warning %></li>
+      </ul>
+    </section>
     """
   end
 
@@ -587,6 +652,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp format_int(_value), do: "n/a"
+
+  defp phase_label(phase) do
+    phase
+    |> to_string()
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
 
   defp cache_ratio(%{input_tokens: input, cached_input_tokens: cached})
        when is_number(input) and input > 0 and is_number(cached) do

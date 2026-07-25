@@ -4,12 +4,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH, WorkerToolchain}
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
   @rate_limits_id 4
+  @thread_compact_id 5
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -149,6 +150,24 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   @doc """
+  Compacts the current app-server thread between autonomous execution phases.
+  """
+  @spec compact_session(session()) :: :ok | {:error, term()}
+  def compact_session(%{port: port, thread_id: thread_id})
+      when is_port(port) and is_binary(thread_id) do
+    send_message(port, %{
+      "method" => "thread/compact/start",
+      "id" => @thread_compact_id,
+      "params" => %{"threadId" => thread_id}
+    })
+
+    case await_response(port, @thread_compact_id) do
+      {:ok, _result} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Reads the authenticated Codex account rate limits without creating a thread.
   """
   @spec read_rate_limits() :: {:ok, map()} | {:error, term()}
@@ -237,7 +256,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
             cd: String.to_charlist(workspace),
-            env: tracker_secret_port_env(dynamic_tool_binding),
+            env: WorkerToolchain.port_env() ++ tracker_secret_port_env(dynamic_tool_binding),
             line: @port_line_bytes
           ]
         )

@@ -7,8 +7,18 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, CompletedRunStore, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{
+    AgentRunner,
+    CompletedRunStore,
+    Config,
+    StatusDashboard,
+    TokenCircuitBreaker,
+    Tracker,
+    Workspace
+  }
+
   alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.GitHub.Lifecycle
   alias SymphonyElixir.Tracker.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -198,6 +208,37 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_info({:worker_phase, issue_id, phase}, %{running: running} = state)
+      when is_binary(issue_id) and phase in [:implementation, :verification, :publication, :compaction] do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated =
+          running_entry
+          |> Map.put(:phase, phase)
+          |> Map.put_new(:phase_token_usage, %{})
+          |> Map.put_new(:phase_resumptions, %{})
+
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
+  def handle_info({:worker_compacted, issue_id}, %{running: running} = state)
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated = Map.update(running_entry, :compaction_count, 1, &(&1 + 1))
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
   def handle_info(
         {:codex_worker_update, issue_id, %{event: _, timestamp: _} = update},
         %{running: running} = state
@@ -208,14 +249,17 @@ defmodule SymphonyElixir.Orchestrator do
 
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
+        updated_running_entry = track_phase_usage(updated_running_entry, update, token_delta)
 
         state =
           state
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
+          |> put_running_entry(issue_id, updated_running_entry)
+          |> apply_token_circuit_breaker(issue_id)
 
         notify_dashboard()
-        {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
+        {:noreply, state}
     end
   end
 
@@ -1491,6 +1535,11 @@ defmodule SymphonyElixir.Orchestrator do
           codex_total_tokens: metadata.codex_total_tokens,
           agent_messages: Map.get(metadata, :agent_messages, []),
           turn_count: Map.get(metadata, :turn_count, 0),
+          phase: Map.get(metadata, :phase, :intake),
+          phase_token_usage: Map.get(metadata, :phase_token_usage, %{}),
+          phase_resumptions: Map.get(metadata, :phase_resumptions, %{}),
+          compaction_count: Map.get(metadata, :compaction_count, 0),
+          circuit_warnings: Map.get(metadata, :circuit_warnings, []),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
@@ -1650,6 +1699,187 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp turn_count_for_update(_existing_count, _existing_session_id, _update), do: 0
 
+  defp track_phase_usage(running_entry, update, token_delta) do
+    phase = Map.get(update, :phase) || Map.get(running_entry, :phase) || :intake
+    phase_usage = Map.get(running_entry, :phase_token_usage, %{})
+    current = Map.get(phase_usage, phase, empty_phase_usage())
+
+    current =
+      current
+      |> Map.update!(:input_tokens, &(&1 + token_delta.input_tokens))
+      |> Map.update!(:cached_input_tokens, &(&1 + token_delta.cached_input_tokens))
+      |> Map.update!(:output_tokens, &(&1 + token_delta.output_tokens))
+      |> Map.update!(:total_tokens, &(&1 + token_delta.total_tokens))
+
+    phase_resumptions =
+      if update.event == :session_started do
+        running_entry
+        |> Map.get(:phase_resumptions, %{})
+        |> Map.update(phase, 1, &(&1 + 1))
+      else
+        Map.get(running_entry, :phase_resumptions, %{})
+      end
+
+    running_entry
+    |> Map.put(:phase, phase)
+    |> Map.put(:phase_token_usage, Map.put(phase_usage, phase, current))
+    |> Map.put(:phase_resumptions, phase_resumptions)
+    |> track_operation(update)
+  end
+
+  defp empty_phase_usage do
+    %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+  end
+
+  defp track_operation(running_entry, update) do
+    operation = operation_key(update)
+    previous = Map.get(running_entry, :last_operation_key)
+
+    cond do
+      is_nil(operation) ->
+        running_entry
+
+      operation == previous ->
+        Map.update(running_entry, :unchanged_operation_count, 1, &(&1 + 1))
+
+      true ->
+        running_entry
+        |> Map.put(:last_operation_key, operation)
+        |> Map.put(:unchanged_operation_count, 1)
+    end
+  end
+
+  defp operation_key(update) do
+    payload = map_or_empty(update[:payload])
+    method = first_binary([payload["method"], payload[:method]])
+    params = map_or_empty(first_map([payload["params"], payload[:params]]))
+    item = map_or_empty(first_map([params["item"], params[:item]]))
+
+    if observable_operation?(method) do
+      Enum.join([method, operation_detail(params, item)], ":")
+    else
+      nil
+    end
+  end
+
+  defp observable_operation?(method) when is_binary(method) do
+    not String.contains?(String.downcase(method), ["token", "usage", "rate"])
+  end
+
+  defp observable_operation?(_method), do: false
+
+  defp first_binary(values), do: Enum.find(values, &is_binary/1)
+  defp first_map(values), do: Enum.find(values, &is_map/1)
+  defp map_or_empty(value) when is_map(value), do: value
+  defp map_or_empty(_value), do: %{}
+
+  defp operation_detail(params, item) do
+    [
+      item["id"],
+      item[:id],
+      params["command"],
+      params[:command],
+      params["parsedCmd"],
+      params[:parsedCmd],
+      item["type"],
+      item[:type]
+    ]
+    |> first_binary()
+    |> case do
+      nil -> "event"
+      detail -> String.slice(detail, 0, 200)
+    end
+  end
+
+  defp put_running_entry(%State{} = state, issue_id, running_entry) do
+    %{state | running: Map.put(state.running, issue_id, running_entry)}
+  end
+
+  defp apply_token_circuit_breaker(%State{} = state, issue_id) do
+    case Map.get(state.running, issue_id) do
+      %{phase_token_usage: _} = running_entry ->
+        if circuit_check_due?(running_entry) do
+          evaluate_token_circuit(state, issue_id, running_entry)
+        else
+          state
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  defp evaluate_token_circuit(state, issue_id, running_entry) do
+    files_changed? = workspace_files_changed?(Map.get(running_entry, :workspace_path))
+
+    case TokenCircuitBreaker.evaluate(running_entry, Config.settings!().agent, files_changed?) do
+      {:continue, warnings} ->
+        put_circuit_warnings(state, issue_id, warnings)
+
+      {:pause, reason, warnings} ->
+        paused_entry =
+          running_entry
+          |> Map.put(:circuit_warnings, warnings)
+          |> Map.put(:circuit_breaker_reason, reason)
+
+        cleanup_circuit_lifecycle(paused_entry, reason)
+
+        state
+        |> put_running_entry(issue_id, paused_entry)
+        |> stop_and_block_issue(issue_id, paused_entry, "token circuit breaker: #{reason}")
+    end
+  end
+
+  defp circuit_check_due?(running_entry) do
+    total = Map.get(running_entry, :codex_total_tokens, 0)
+    settings = Config.settings!().agent
+
+    total >=
+      min(settings.token_warn_total, settings.token_pause_no_change)
+  end
+
+  defp workspace_files_changed?(workspace) when is_binary(workspace) do
+    case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
+      {output, 0} -> String.trim(output) != ""
+      _ -> false
+    end
+  end
+
+  defp workspace_files_changed?(_workspace), do: false
+
+  defp cleanup_circuit_lifecycle(%{issue: %Issue{} = issue}, reason) do
+    Task.start(fn ->
+      case Lifecycle.block_issue(issue, "Token circuit breaker: #{reason}") do
+        :ok ->
+          :ok
+
+        {:error, cleanup_reason} ->
+          Logger.warning(
+            "Failed GitHub lifecycle cleanup after token circuit breaker for #{issue.identifier}: " <>
+              inspect(cleanup_reason)
+          )
+      end
+    end)
+
+    :ok
+  end
+
+  defp cleanup_circuit_lifecycle(_running_entry, _reason), do: :ok
+
+  defp put_circuit_warnings(state, _issue_id, []), do: state
+
+  defp put_circuit_warnings(%State{} = state, issue_id, warnings) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        state
+
+      running_entry ->
+        existing = Map.get(running_entry, :circuit_warnings, [])
+        updated = Map.put(running_entry, :circuit_warnings, Enum.uniq(existing ++ warnings))
+        put_running_entry(state, issue_id, updated)
+    end
+  end
+
   defp summarize_codex_update(update) do
     %{
       event: update[:event],
@@ -1733,6 +1963,10 @@ defmodule SymphonyElixir.Orchestrator do
         output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
         total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
       },
+      phase_token_usage: Map.get(running_entry, :phase_token_usage, %{}),
+      phase_resumptions: Map.get(running_entry, :phase_resumptions, %{}),
+      compaction_count: Map.get(running_entry, :compaction_count, 0),
+      circuit_warnings: Map.get(running_entry, :circuit_warnings, []),
       agent_messages: Map.get(running_entry, :agent_messages, []),
       last_event: to_string(Map.get(running_entry, :last_codex_event) || ""),
       last_message:

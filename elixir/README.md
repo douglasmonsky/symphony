@@ -131,6 +131,13 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
+  phased_execution: true
+  verification_command: make all
+  verification_timeout_ms: 3600000
+  token_warn_total: 250000
+  token_pause_no_change: 200000
+  token_cache_ratio_pause: 10.0
+  token_compact_total: 500000
 codex:
   command: codex app-server
 ---
@@ -165,6 +172,24 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `agent.phased_execution` enables the GitHub-specific host pipeline. It requires
+  `agent.verification_command`, uses three model phases (implementation, verification
+  interpretation, and publish-or-block), and explicitly compacts the Codex thread
+  between phases.
+- In phased execution, Symphony prepares the branch, manages lifecycle labels and the
+  single Symphony workpad, launches the final gate exactly once without a PTY, writes
+  full output under the host temporary `symphony-verification/` artifact directory, and
+  sends Codex only a bounded result of at most 20 relevant lines. `CI=1`, `COLUMNS=160`,
+  `LINES=50`, and `TERM=dumb` make the validation environment deterministic.
+- Phased workers receive a compact task capsule instead of overlapping workflow, issue,
+  repository, workpad, and API payloads. Repository guidance is loaded before editing;
+  publishing or blocked-state instructions are loaded only when needed.
+- Token guardrails default to a 250k docs-only warning, a 200k pause when no files changed,
+  a 10:1 cached-to-new-context pause while the same operation repeats, and mandatory
+  compaction before continuing past 500k. Configure them with the `agent.token_*` fields
+  shown above.
+- The local worker PATH includes an existing system `rg` and the Codex Desktop bundled
+  fallback on macOS. Phased execution refuses to start if `rg` still cannot be resolved.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
@@ -301,8 +326,10 @@ The observability UI now runs on a minimal Phoenix stack:
   or oversized persisted records are bounded or ignored during recovery.
 - Expandable running and terminal-history rows show completed agent messages, session/workspace
   metadata, blocked reasons, and input split into new context, cached context, and output tokens.
-  Running-row expansion survives LiveView refresh ticks. Completed and blocked outcomes persist
-  across service restarts; raw tool inputs and outputs are not retained in dashboard history.
+  Phased runs also show the current phase, per-phase token totals, model resumptions, compaction
+  count, and token-guardrail warnings. Running-row expansion survives LiveView refresh ticks.
+  Completed and blocked outcomes persist across service restarts; raw tool inputs and outputs are
+  not retained in dashboard history.
 - Account limits are polled once per minute through Codex app-server's
   `account/rateLimits/read` method, including when no issue worker is active. Primary and secondary
   windows render separately, and the dashboard reports current, refreshing, stale, and unavailable

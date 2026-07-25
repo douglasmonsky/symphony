@@ -129,7 +129,12 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
       },
-      agent_messages: Map.get(entry, :agent_messages, [])
+      agent_messages: Map.get(entry, :agent_messages, []),
+      phase: Map.get(entry, :phase, :intake),
+      phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
+      phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
+      compaction_count: Map.get(entry, :compaction_count, 0),
+      circuit_warnings: Map.get(entry, :circuit_warnings, [])
     }
   end
 
@@ -235,6 +240,10 @@ defmodule SymphonyElixirWeb.Presenter do
         output_tokens: Map.get(tokens, :output_tokens, 0),
         total_tokens: Map.get(tokens, :total_tokens, 0)
       },
+      phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
+      phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
+      compaction_count: Map.get(entry, :compaction_count, 0),
+      circuit_warnings: Map.get(entry, :circuit_warnings, []),
       agent_messages: Map.get(entry, :agent_messages, []),
       last_event: Map.get(entry, :last_event),
       last_message: Map.get(entry, :last_message)
@@ -259,6 +268,38 @@ defmodule SymphonyElixirWeb.Presenter do
       total_tokens: 0,
       seconds_running: 0
     }
+  end
+
+  defp phase_usage_payload(usage) when is_map(usage) do
+    Enum.map([:intake, :implementation, :verification, :publication], fn phase ->
+      totals = Map.get(usage, phase) || Map.get(usage, Atom.to_string(phase)) || %{}
+      input_tokens = map_integer(totals, :input_tokens)
+      cached_input_tokens = map_integer(totals, :cached_input_tokens)
+
+      %{
+        phase: phase,
+        input_tokens: input_tokens,
+        cached_input_tokens: cached_input_tokens,
+        uncached_input_tokens: max(0, input_tokens - cached_input_tokens),
+        output_tokens: map_integer(totals, :output_tokens),
+        total_tokens: map_integer(totals, :total_tokens)
+      }
+    end)
+  end
+
+  defp phase_usage_payload(_usage), do: phase_usage_payload(%{})
+
+  defp phase_resumptions_payload(resumptions) when is_map(resumptions) do
+    Map.new([:intake, :implementation, :verification, :publication], fn phase ->
+      {phase, map_integer(resumptions, phase)}
+    end)
+  end
+
+  defp phase_resumptions_payload(_resumptions), do: phase_resumptions_payload(%{})
+
+  defp map_integer(map, key) when is_map(map) do
+    value = Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    if is_integer(value) and value >= 0, do: value, else: 0
   end
 
   defp rate_limits_status_payload(status) when is_map(status) do

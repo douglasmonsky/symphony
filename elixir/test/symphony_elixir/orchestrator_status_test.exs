@@ -154,6 +154,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     now = DateTime.utc_now()
 
+    send(pid, {:worker_phase, issue_id, :implementation})
+    send(pid, {:worker_compacted, issue_id})
+
     send(
       pid,
       {:codex_worker_update, issue_id,
@@ -214,6 +217,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
     assert snapshot_entry.turn_count == 1
+    assert snapshot_entry.phase == :implementation
+    assert snapshot_entry.phase_token_usage.implementation.total_tokens == 16
+    assert snapshot_entry.phase_resumptions.implementation == 1
+    assert snapshot_entry.compaction_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})

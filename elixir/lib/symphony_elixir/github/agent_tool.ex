@@ -3,7 +3,7 @@ defmodule SymphonyElixir.GitHub.AgentTool do
   Provider-native GitHub REST tool exposed to Codex app-server turns.
   """
 
-  alias SymphonyElixir.GitHub.Client
+  alias SymphonyElixir.GitHub.{Client, ResponseProjection}
 
   @github_api_tool "github_api"
   @allowed_methods ["GET", "POST", "PATCH", "PUT", "DELETE"]
@@ -62,7 +62,12 @@ defmodule SymphonyElixir.GitHub.AgentTool do
          {:ok, %{status: status, body: response_body}} <-
            github_client.(method, path, params, body, client_opts),
          true <- is_integer(status) do
-      rest_response(status, response_body)
+      projected_body =
+        if status in 200..299,
+          do: ResponseProjection.project(method, path, response_body),
+          else: response_body
+
+      rest_response(status, projected_body)
     else
       {:error, reason} -> failure_response(tool_error_payload(reason))
       _ -> failure_response(tool_error_payload(:github_unknown_payload))
@@ -117,10 +122,7 @@ defmodule SymphonyElixir.GitHub.AgentTool do
   end
 
   defp encode_payload(payload) do
-    case Jason.encode(payload, pretty: true) do
-      {:ok, output} -> output
-      {:error, _reason} -> inspect(payload)
-    end
+    Jason.encode!(payload, pretty: true)
   end
 
   defp unsupported_tool_response(tool) do

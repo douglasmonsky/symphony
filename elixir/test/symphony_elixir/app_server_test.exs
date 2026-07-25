@@ -47,6 +47,55 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "compacts an active thread through the app-server protocol" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-compact-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspaces/GH-42")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-compact"}}}' ;;
+          4)
+            case "$line" in
+              *'"method":"thread/compact/start"'*'"threadId":"thread-compact"'*)
+                printf '%s\\n' '{"id":5,"result":{}}'
+                ;;
+              *) exit 9 ;;
+            esac
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: Path.join(test_root, "workspaces"),
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      assert :ok = AppServer.compact_session(session)
+      assert :ok = AppServer.stop_session(session)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(

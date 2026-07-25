@@ -153,6 +153,13 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:phased_execution, :boolean, default: false)
+      field(:verification_command, :string)
+      field(:verification_timeout_ms, :integer, default: 3_600_000)
+      field(:token_warn_total, :integer, default: 250_000)
+      field(:token_pause_no_change, :integer, default: 200_000)
+      field(:token_cache_ratio_pause, :float, default: 10.0)
+      field(:token_compact_total, :integer, default: 500_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -160,14 +167,43 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :phased_execution,
+          :verification_command,
+          :verification_timeout_ms,
+          :token_warn_total,
+          :token_pause_no_change,
+          :token_cache_ratio_pause,
+          :token_compact_total
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:verification_timeout_ms, greater_than: 0)
+      |> validate_number(:token_warn_total, greater_than: 0)
+      |> validate_number(:token_pause_no_change, greater_than: 0)
+      |> validate_number(:token_cache_ratio_pause, greater_than: 0)
+      |> validate_number(:token_compact_total, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> validate_phased_execution()
+    end
+
+    defp validate_phased_execution(changeset) do
+      command = get_field(changeset, :verification_command)
+
+      if get_field(changeset, :phased_execution) and
+           (not is_binary(command) or String.trim(command) == "") do
+        add_error(changeset, :verification_command, "is required when phased_execution is enabled")
+      else
+        changeset
+      end
     end
   end
 

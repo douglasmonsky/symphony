@@ -107,6 +107,10 @@ defmodule SymphonyElixir.CompletedRunStore do
         runtime_seconds: runtime_seconds,
         turn_count: turn_count,
         tokens: decoded_tokens,
+        phase_token_usage: decode_phase_usage(record["phase_token_usage"]),
+        phase_resumptions: decode_phase_resumptions(record["phase_resumptions"]),
+        compaction_count: non_negative_integer_or_zero(record["compaction_count"]),
+        circuit_warnings: decode_string_list(record["circuit_warnings"]),
         agent_messages: agent_messages,
         last_event: optional_string(record["last_event"]),
         last_message: optional_string(record["last_message"])
@@ -120,6 +124,39 @@ defmodule SymphonyElixir.CompletedRunStore do
 
   defp decode_outcome("blocked"), do: "blocked"
   defp decode_outcome(_outcome), do: "completed"
+
+  defp decode_phase_usage(usage) when is_map(usage) do
+    Map.new(usage, fn {phase, totals} ->
+      {phase, decode_phase_totals(totals)}
+    end)
+  end
+
+  defp decode_phase_usage(_usage), do: %{}
+
+  defp decode_phase_totals(totals) when is_map(totals) do
+    %{
+      input_tokens: non_negative_integer_or_zero(totals["input_tokens"]),
+      cached_input_tokens: non_negative_integer_or_zero(totals["cached_input_tokens"]),
+      output_tokens: non_negative_integer_or_zero(totals["output_tokens"]),
+      total_tokens: non_negative_integer_or_zero(totals["total_tokens"])
+    }
+  end
+
+  defp decode_phase_totals(_totals) do
+    %{input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, total_tokens: 0}
+  end
+
+  defp decode_phase_resumptions(resumptions) when is_map(resumptions) do
+    Map.new(resumptions, fn {phase, count} -> {phase, non_negative_integer_or_zero(count)} end)
+  end
+
+  defp decode_phase_resumptions(_resumptions), do: %{}
+
+  defp decode_string_list(values) when is_list(values) do
+    values |> Enum.filter(&is_binary/1) |> Enum.take(20)
+  end
+
+  defp decode_string_list(_values), do: []
 
   defp decode_tokens(tokens) when is_map(tokens) do
     with {:ok, input_tokens} <- non_negative_integer(tokens["input_tokens"]),
@@ -151,6 +188,9 @@ defmodule SymphonyElixir.CompletedRunStore do
 
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: {:ok, value}
   defp non_negative_integer(_value), do: :error
+
+  defp non_negative_integer_or_zero(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative_integer_or_zero(_value), do: 0
 
   defp optional_string(nil), do: nil
   defp optional_string(value) when is_binary(value), do: value

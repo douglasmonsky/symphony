@@ -15,7 +15,7 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
         Application.put_env(:symphony_elixir, :completed_runs_file, previous_path)
       end
 
-      File.rm(path)
+      File.rm_rf(path)
     end)
 
     %{path: path}
@@ -37,6 +37,12 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
              %{identifier: "GH-3", agent_messages: ["done three"]},
              %{identifier: "GH-2", agent_messages: ["done two"]}
            ] = CompletedRunStore.load(2)
+
+    [latest | _] = CompletedRunStore.load(2)
+    assert latest.phase_token_usage["implementation"].total_tokens == 77
+    assert latest.phase_resumptions["publication"] == 1
+    assert latest.compaction_count == 2
+    assert latest.circuit_warnings == ["docs warning"]
 
     assert {:ok, %{mode: mode}} = File.stat(path)
     assert Bitwise.band(mode, 0o777) == 0o600
@@ -160,6 +166,38 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
     assert [%{identifier: "GH-DEFAULT"}] = CompletedRunStore.load()
   end
 
+  test "normalizes malformed optional phase telemetry" do
+    malformed =
+      completed_record("GH-MALFORMED-PHASE", ["done"])
+      |> Map.put(:phase_token_usage, %{"implementation" => "bad totals"})
+      |> Map.put(:phase_resumptions, "bad resumptions")
+      |> Map.put(:compaction_count, -1)
+      |> Map.put(:circuit_warnings, "bad warnings")
+
+    absent =
+      completed_record("GH-ABSENT-PHASE", ["done"])
+      |> Map.put(:phase_token_usage, "bad usage")
+      |> Map.put(:phase_resumptions, %{"implementation" => -1})
+      |> Map.put(:circuit_warnings, [1, "kept"])
+
+    assert :ok = CompletedRunStore.persist([malformed, absent])
+    [decoded_malformed, decoded_absent] = CompletedRunStore.load()
+
+    assert decoded_malformed.phase_token_usage["implementation"] == %{
+             input_tokens: 0,
+             cached_input_tokens: 0,
+             output_tokens: 0,
+             total_tokens: 0
+           }
+
+    assert decoded_malformed.phase_resumptions == %{}
+    assert decoded_malformed.compaction_count == 0
+    assert decoded_malformed.circuit_warnings == []
+    assert decoded_absent.phase_token_usage == %{}
+    assert decoded_absent.phase_resumptions["implementation"] == 0
+    assert decoded_absent.circuit_warnings == ["kept"]
+  end
+
   defp completed_record(identifier, messages) do
     %{
       issue_id: String.downcase(identifier),
@@ -179,6 +217,23 @@ defmodule SymphonyElixir.CompletedRunStoreTest do
         output_tokens: 10,
         total_tokens: 110
       },
+      phase_token_usage: %{
+        implementation: %{
+          input_tokens: 70,
+          cached_input_tokens: 50,
+          output_tokens: 7,
+          total_tokens: 77
+        },
+        verification: %{
+          input_tokens: 30,
+          cached_input_tokens: 30,
+          output_tokens: 3,
+          total_tokens: 33
+        }
+      },
+      phase_resumptions: %{implementation: 1, verification: 1, publication: 1},
+      compaction_count: 2,
+      circuit_warnings: ["docs warning"],
       agent_messages: messages,
       last_event: "turn_completed",
       last_message: List.last(messages)

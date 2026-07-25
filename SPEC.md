@@ -460,6 +460,18 @@ Fields:
   - State keys are normalized (`trim + lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
+- `phased_execution` (boolean, OPTIONAL)
+  - Default: `false`.
+  - When enabled, the implementation MAY replace the generic continuation loop with a
+    bounded implementation, verification-interpretation, and publish-or-block pipeline.
+- `verification_command` (string, REQUIRED when `phased_execution` is `true`)
+- `verification_timeout_ms` (positive integer)
+  - Default: `3600000`.
+- `token_warn_total`, `token_pause_no_change`, `token_compact_total` (positive integers)
+  - Defaults: `250000`, `200000`, and `500000`.
+- `token_cache_ratio_pause` (positive number)
+  - Default: `10.0`.
+
 #### 5.3.6 `codex` (object)
 
 Fields:
@@ -1170,6 +1182,18 @@ Behavior:
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
 5. On any error, fail the worker attempt (the orchestrator will retry).
+
+When `agent.phased_execution` is enabled, a conforming implementation:
+
+1. MUST keep deterministic branch, lifecycle-label, workpad, verification-launch,
+   verification-artifact, and declared-outcome cleanup mechanics in the host.
+2. MUST run the configured verification command once without a PTY (or with deterministic
+   terminal dimensions), stream full output to an artifact, and provide the model only a
+   bounded completion summary.
+3. MUST explicitly compact between broad model phases and MUST NOT require model responses
+   for dashboard progress updates.
+4. SHOULD project issue and pull-request tool responses to the fields needed by the task.
+5. SHOULD enforce configured token circuit breakers outside the model loop.
 
 Note:
 

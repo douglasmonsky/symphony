@@ -274,8 +274,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "agent_messages" => [],
                "tokens" => %{
                  "input_tokens" => 4,
-                 "cached_input_tokens" => 0,
-                 "uncached_input_tokens" => 4,
+                 "cached_input_tokens" => 2,
+                 "uncached_input_tokens" => 2,
                  "output_tokens" => 8,
                  "total_tokens" => 12
                }
@@ -324,8 +324,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event_at" => nil,
                "tokens" => %{
                  "input_tokens" => 4,
-                 "cached_input_tokens" => 0,
-                 "uncached_input_tokens" => 4,
+                 "cached_input_tokens" => 2,
+                 "uncached_input_tokens" => 2,
                  "output_tokens" => 8,
                  "total_tokens" => 12
                },
@@ -507,6 +507,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Agent output"
     assert html =~ "New context"
+    assert html =~ "Usage by phase"
+    assert html =~ "Resumptions"
+    assert html =~ "Implementation"
+    assert html =~ "Docs-only run token warning."
     assert html =~ "Run history"
     assert html =~ "MT-HISTORY-BLOCKED"
     assert html =~ "Run blocked"
@@ -682,8 +686,21 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_timestamp: nil,
           last_codex_event: :notification,
           codex_input_tokens: 4,
+          codex_cached_input_tokens: 2,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          phase: :implementation,
+          phase_token_usage: %{
+            implementation: %{
+              input_tokens: 4,
+              cached_input_tokens: 2,
+              output_tokens: 8,
+              total_tokens: 12
+            }
+          },
+          phase_resumptions: %{implementation: 1},
+          compaction_count: 0,
+          circuit_warnings: ["Docs-only run token warning."],
           started_at: DateTime.utc_now()
         }
       ],
@@ -738,6 +755,23 @@ defmodule SymphonyElixir.ExtensionsTest do
             output_tokens: 10,
             total_tokens: 110
           },
+          phase_token_usage: %{
+            implementation: %{
+              input_tokens: 60,
+              cached_input_tokens: 45,
+              output_tokens: 6,
+              total_tokens: 66
+            },
+            verification: %{
+              input_tokens: 40,
+              cached_input_tokens: 35,
+              output_tokens: 4,
+              total_tokens: 44
+            }
+          },
+          phase_resumptions: %{implementation: 1, verification: 1, publication: 1},
+          compaction_count: 2,
+          circuit_warnings: [],
           agent_messages: ["waiting for operator"],
           last_event: "turn_input_required",
           last_message: "waiting for operator"
