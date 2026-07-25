@@ -37,6 +37,7 @@ defmodule SymphonyElixir.PhasedAgentRunnerTest do
             ;;
           *'"method":"thread/compact/start"'*)
             printf '%s\n' '{"id":5,"result":{}}'
+            printf '%s\n' '{"method":"turn/completed"}'
             ;;
           *'"method":"turn/start"'*)
             turns=$((turns + 1))

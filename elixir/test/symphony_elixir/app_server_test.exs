@@ -72,6 +72,8 @@ defmodule SymphonyElixir.AppServerTest do
             case "$line" in
               *'"method":"thread/compact/start"'*'"threadId":"thread-compact"'*)
                 printf '%s\\n' '{"id":5,"result":{}}'
+                sleep 0.1
+                printf '%s\\n' '{"method":"turn/completed"}'
                 ;;
               *) exit 9 ;;
             esac
@@ -89,7 +91,9 @@ defmodule SymphonyElixir.AppServerTest do
       )
 
       assert {:ok, session} = AppServer.start_session(workspace)
+      started_at = System.monotonic_time(:millisecond)
       assert :ok = AppServer.compact_session(session)
+      assert System.monotonic_time(:millisecond) - started_at >= 75
       assert :ok = AppServer.stop_session(session)
     after
       File.rm_rf(test_root)
