@@ -4,11 +4,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH, WorkerToolchain}
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @rate_limits_id 4
+  @thread_compact_id 5
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @type session :: %{
@@ -147,6 +149,55 @@ defmodule SymphonyElixir.Codex.AppServer do
     stop_port(port)
   end
 
+  @doc """
+  Compacts the current app-server thread between autonomous execution phases.
+  """
+  @spec compact_session(session()) :: :ok | {:error, term()}
+  def compact_session(%{port: port, thread_id: thread_id})
+      when is_port(port) and is_binary(thread_id) do
+    send_message(port, %{
+      "method" => "thread/compact/start",
+      "id" => @thread_compact_id,
+      "params" => %{"threadId" => thread_id}
+    })
+
+    with {:ok, _result} <- await_response(port, @thread_compact_id) do
+      await_compaction_completion(port)
+    end
+  end
+
+  @doc """
+  Reads the authenticated Codex account rate limits without creating a thread.
+  """
+  @spec read_rate_limits() :: {:ok, map()} | {:error, term()}
+  def read_rate_limits do
+    dynamic_tool_binding = DynamicTool.bind()
+
+    case start_port(File.cwd!(), nil, dynamic_tool_binding) do
+      {:ok, port} ->
+        try do
+          with :ok <- send_initialize(port) do
+            send_message(port, %{
+              "method" => "account/rateLimits/read",
+              "id" => @rate_limits_id,
+              "params" => %{}
+            })
+
+            case await_response(port, @rate_limits_id) do
+              {:ok, %{} = result} -> {:ok, result}
+              {:ok, result} -> {:error, {:invalid_rate_limits_response, result}}
+              {:error, _reason} = error -> error
+            end
+          end
+        after
+          stop_port(port)
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     expanded_root = Config.local_workspace_root()
@@ -204,7 +255,7 @@ defmodule SymphonyElixir.Codex.AppServer do
             :stderr_to_stdout,
             args: [~c"-lc", String.to_charlist(local_launch_command(dynamic_tool_binding))],
             cd: String.to_charlist(workspace),
-            env: tracker_secret_port_env(dynamic_tool_binding),
+            env: WorkerToolchain.port_env() ++ tracker_secret_port_env(dynamic_tool_binding),
             line: @port_line_bytes
           ]
         )
@@ -374,6 +425,54 @@ defmodule SymphonyElixir.Codex.AppServer do
       tool_executor,
       auto_approve_requests
     )
+  end
+
+  defp await_compaction_completion(port) do
+    receive_compaction_completion(
+      port,
+      Config.settings!().codex.turn_timeout_ms,
+      ""
+    )
+  end
+
+  defp receive_compaction_completion(port, timeout_ms, pending_line) do
+    receive do
+      {^port, {:data, {:eol, chunk}}} ->
+        complete_line = pending_line <> to_string(chunk)
+        handle_compaction_message(port, complete_line, timeout_ms)
+
+      {^port, {:data, {:noeol, chunk}}} ->
+        receive_compaction_completion(port, timeout_ms, pending_line <> to_string(chunk))
+
+      {^port, {:exit_status, status}} ->
+        {:error, {:port_exit, status}}
+    after
+      timeout_ms ->
+        {:error, :compaction_timeout}
+    end
+  end
+
+  defp handle_compaction_message(port, data, timeout_ms) do
+    payload_string = to_string(data)
+
+    case Jason.decode(payload_string) do
+      {:ok, %{"method" => "turn/completed"}} ->
+        :ok
+
+      {:ok, %{"method" => "turn/failed", "params" => details}} ->
+        {:error, {:compaction_failed, details}}
+
+      {:ok, %{"method" => "turn/cancelled", "params" => details}} ->
+        {:error, {:compaction_cancelled, details}}
+
+      {:ok, %{} = payload} ->
+        Logger.debug("Ignoring message while waiting for compaction: #{inspect(payload)}")
+        receive_compaction_completion(port, timeout_ms, "")
+
+      {:error, _reason} ->
+        log_non_json_stream_line(payload_string, "compaction stream")
+        receive_compaction_completion(port, timeout_ms, "")
+    end
   end
 
   defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do

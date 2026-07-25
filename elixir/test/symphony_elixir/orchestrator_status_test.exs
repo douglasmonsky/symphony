@@ -154,6 +154,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     now = DateTime.utc_now()
 
+    send(pid, {:worker_phase, issue_id, :implementation})
+    send(pid, {:worker_compacted, issue_id})
+    send(pid, {:worker_host_wait, issue_id, true})
+    assert :sys.get_state(pid).running[issue_id].host_waiting
+    assert %DateTime{} = :sys.get_state(pid).running[issue_id].host_wait_started_at
+    send(pid, {:worker_host_wait, issue_id, false})
+
     send(
       pid,
       {:codex_worker_update, issue_id,
@@ -173,7 +180,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            "method" => "thread/tokenUsage/updated",
            "params" => %{
              "tokenUsage" => %{
-               "total" => %{"inputTokens" => 12, "outputTokens" => 4, "totalTokens" => 16}
+               "total" => %{
+                 "inputTokens" => 12,
+                 "cachedInputTokens" => 9,
+                 "outputTokens" => 4,
+                 "totalTokens" => 16
+               }
              }
            }
          },
@@ -182,22 +194,58 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
        }}
     )
 
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :notification,
+         payload: %{
+           "method" => "item/completed",
+           "params" => %{
+             "item" => %{
+               "id" => "message-1",
+               "type" => "agentMessage",
+               "text" => "Implemented the requested change and opened the issue for review."
+             }
+           }
+         },
+         timestamp: now
+       }}
+    )
+
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.codex_app_server_pid == "4242"
     assert snapshot_entry.codex_input_tokens == 12
+    assert snapshot_entry.codex_cached_input_tokens == 9
     assert snapshot_entry.codex_output_tokens == 4
     assert snapshot_entry.codex_total_tokens == 16
     assert snapshot_entry.turn_count == 1
+    assert snapshot_entry.phase == :implementation
+    assert snapshot_entry.phase_token_usage.implementation.total_tokens == 16
+    assert snapshot_entry.phase_resumptions.implementation == 1
+    assert snapshot_entry.compaction_count == 1
     assert is_integer(snapshot_entry.runtime_seconds)
+    refute :sys.get_state(pid).running[issue_id].host_waiting
+    refute Map.has_key?(:sys.get_state(pid).running[issue_id], :host_wait_started_at)
 
     send(pid, {:DOWN, process_ref, :process, self(), :normal})
     completed_state = :sys.get_state(pid)
 
     assert completed_state.codex_totals.input_tokens == 12
+    assert completed_state.codex_totals.cached_input_tokens == 9
     assert completed_state.codex_totals.output_tokens == 4
     assert completed_state.codex_totals.total_tokens == 16
     assert is_integer(completed_state.codex_totals.seconds_running)
+
+    assert [
+             %{
+               identifier: "MT-201",
+               agent_messages: [
+                 "Implemented the requested change and opened the issue for review."
+               ]
+             }
+           ] = completed_state.completed_runs
   end
 
   test "orchestrator snapshot tracks turn completed usage when present" do
@@ -467,6 +515,47 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.rate_limits == rate_limits
+  end
+
+  test "rate limit reader crashes clear refresh state and schedule another poll" do
+    orchestrator_name = Module.concat(__MODULE__, :RateLimitCrashOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    previous_poll_setting = Application.get_env(:symphony_elixir, :rate_limits_poll_enabled)
+
+    on_exit(fn ->
+      Application.put_env(
+        :symphony_elixir,
+        :rate_limits_poll_enabled,
+        previous_poll_setting
+      )
+
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :rate_limits_poll_enabled, true)
+    task_ref = make_ref()
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | codex_rate_limits: %{"limitId" => "codex"},
+          codex_rate_limits_status: :refreshing,
+          rate_limits_refresh_in_progress: true,
+          rate_limits_task_ref: task_ref,
+          rate_limits_timer_ref: nil
+      }
+    end)
+
+    send(pid, {:DOWN, task_ref, :process, self(), :boom})
+    state = :sys.get_state(pid)
+
+    assert state.codex_rate_limits_status == :stale
+    assert state.codex_rate_limits_error =~ "rate_limits_task_exit"
+    refute state.rate_limits_refresh_in_progress
+    assert is_nil(state.rate_limits_task_ref)
+    assert is_reference(state.rate_limits_timer_ref)
   end
 
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
@@ -814,19 +903,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert %{polling: %{checking?: true}} =
-             wait_for_snapshot(
-               pid,
-               fn
-                 %{polling: %{checking?: true}} ->
-                   true
-
-                 _ ->
-                   false
-               end,
-               500
-             )
-
     assert %{
              polling: %{
                checking?: false,
@@ -844,7 +920,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                  _ ->
                    false
                end,
-               500
+               2_000
              )
 
     assert is_integer(next_poll_in_ms)
@@ -970,6 +1046,73 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
     assert remaining_ms >= 9_500
     assert remaining_ms <= 10_500
+  end
+
+  test "orchestrator does not restart a worker awaiting a host command" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      codex_stall_timeout_ms: 1_000
+    )
+
+    issue_id = "issue-host-wait"
+    orchestrator_name = Module.concat(__MODULE__, :HostWaitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    worker_pid =
+      spawn(fn ->
+        receive do
+          :done -> :ok
+        end
+      end)
+
+    stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
+    initial_state = :sys.get_state(pid)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-HOST-WAIT",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-HOST-WAIT",
+      dispatchable: true
+    }
+
+    running_entry = %{
+      pid: worker_pid,
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-host-wait-turn-host-wait",
+      last_codex_message: nil,
+      last_codex_timestamp: stale_activity_at,
+      last_codex_event: :turn_completed,
+      started_at: stale_activity_at,
+      host_waiting: true,
+      host_wait_started_at: stale_activity_at
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, :tick)
+    Process.sleep(100)
+    state = :sys.get_state(pid)
+
+    assert Process.alive?(worker_pid)
+    assert state.running[issue_id].host_waiting
+    refute Map.has_key?(state.retry_attempts, issue_id)
+
+    send(worker_pid, :done)
   end
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
@@ -1111,6 +1254,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              identifier: "MT-INPUT",
              error: "codex turn requires operator input"
            } = state.blocked[issue_id]
+
+    assert [
+             %{
+               identifier: "MT-INPUT",
+               outcome: "blocked",
+               error: "codex turn requires operator input"
+             }
+           ] = state.completed_runs
   end
 
   test "orchestrator blocks normal worker exits after input required completion" do

@@ -96,6 +96,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_project_slug: "project",
           tracker_assignee: nil,
+          tracker_provider: %{},
           tracker_required_labels: [],
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
@@ -107,6 +108,13 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
+          phased_execution: false,
+          verification_command: nil,
+          verification_timeout_ms: 3_600_000,
+          token_warn_total: 250_000,
+          token_pause_no_change: 200_000,
+          token_cache_ratio_pause: 10.0,
+          token_compact_total: 500_000,
           codex_command: "codex app-server",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
@@ -134,6 +142,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_project_slug = Keyword.get(config, :tracker_project_slug)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_provider = Keyword.get(config, :tracker_provider)
     tracker_required_labels = Keyword.get(config, :tracker_required_labels)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
@@ -145,6 +154,13 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
+    phased_execution = Keyword.get(config, :phased_execution)
+    verification_command = Keyword.get(config, :verification_command)
+    verification_timeout_ms = Keyword.get(config, :verification_timeout_ms)
+    token_warn_total = Keyword.get(config, :token_warn_total)
+    token_pause_no_change = Keyword.get(config, :token_pause_no_change)
+    token_cache_ratio_pause = Keyword.get(config, :token_cache_ratio_pause)
+    token_compact_total = Keyword.get(config, :token_compact_total)
     codex_command = Keyword.get(config, :codex_command)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
@@ -173,6 +189,7 @@ defmodule SymphonyElixir.TestSupport do
         "  api_key: #{yaml_value(tracker_api_token)}",
         "  project_slug: #{yaml_value(tracker_project_slug)}",
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  provider: #{yaml_value(tracker_provider)}",
         "  required_labels: #{yaml_value(tracker_required_labels)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
@@ -186,6 +203,13 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
+        "  phased_execution: #{yaml_value(phased_execution)}",
+        "  verification_command: #{yaml_value(verification_command)}",
+        "  verification_timeout_ms: #{yaml_value(verification_timeout_ms)}",
+        "  token_warn_total: #{yaml_value(token_warn_total)}",
+        "  token_pause_no_change: #{yaml_value(token_pause_no_change)}",
+        "  token_cache_ratio_pause: #{yaml_value(token_cache_ratio_pause)}",
+        "  token_compact_total: #{yaml_value(token_compact_total)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
@@ -210,6 +234,7 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value) when is_integer(value), do: to_string(value)
+  defp yaml_value(value) when is_float(value), do: Float.to_string(value)
   defp yaml_value(true), do: "true"
   defp yaml_value(false), do: "false"
   defp yaml_value(nil), do: "null"

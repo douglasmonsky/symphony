@@ -1166,6 +1166,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().codex.command == "codex app-server"
   end
 
+  test "config validates phased execution and token guardrails" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      phased_execution: true,
+      verification_command: "make -C elixir all",
+      verification_timeout_ms: 90_000,
+      token_warn_total: 25_000,
+      token_pause_no_change: 20_000,
+      token_cache_ratio_pause: 8.5,
+      token_compact_total: 50_000
+    )
+
+    agent = Config.settings!().agent
+    assert agent.phased_execution
+    assert agent.verification_command == "make -C elixir all"
+    assert agent.verification_timeout_ms == 90_000
+    assert agent.token_warn_total == 25_000
+    assert agent.token_pause_no_change == 20_000
+    assert agent.token_cache_ratio_pause == 8.5
+    assert agent.token_compact_total == 50_000
+
+    write_workflow_file!(Workflow.workflow_file_path(), phased_execution: true)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.verification_command"
+
+    write_workflow_file!(Workflow.workflow_file_path(), token_cache_ratio_pause: 0)
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.token_cache_ratio_pause"
+  end
+
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"

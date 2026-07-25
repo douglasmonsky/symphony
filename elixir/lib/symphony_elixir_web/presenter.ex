@@ -11,18 +11,27 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        history = Enum.map(Map.get(snapshot, :completed_runs, []), &completed_entry_payload/1)
+        completed = Enum.filter(history, &(&1.outcome == "completed"))
+
         %{
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying),
-            blocked: length(Map.get(snapshot, :blocked, []))
+            blocked: length(Map.get(snapshot, :blocked, [])),
+            completed: length(completed),
+            history: length(history)
           },
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
-          codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          completed: completed,
+          history: history,
+          codex_totals: token_totals_payload(snapshot.codex_totals),
+          rate_limits: snapshot.rate_limits,
+          rate_limits_by_limit_id: Map.get(snapshot, :rate_limits_by_limit_id),
+          rate_limits_status: rate_limits_status_payload(Map.get(snapshot, :rate_limits_status))
         }
 
       :timeout ->
@@ -115,9 +124,18 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event_at: iso8601(entry.last_codex_timestamp),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
+        cached_input_tokens: Map.get(entry, :codex_cached_input_tokens, 0),
+        uncached_input_tokens: max(0, entry.codex_input_tokens - Map.get(entry, :codex_cached_input_tokens, 0)),
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
-      }
+      },
+      agent_messages: Map.get(entry, :agent_messages, []),
+      phase: Map.get(entry, :phase, :intake),
+      phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
+      phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
+      compaction_count: Map.get(entry, :compaction_count, 0),
+      circuit_warnings: Map.get(entry, :circuit_warnings, []),
+      host_waiting: Map.get(entry, :host_waiting, false)
     }
   end
 
@@ -164,9 +182,12 @@ defmodule SymphonyElixirWeb.Presenter do
       last_event_at: iso8601(running.last_codex_timestamp),
       tokens: %{
         input_tokens: running.codex_input_tokens,
+        cached_input_tokens: Map.get(running, :codex_cached_input_tokens, 0),
+        uncached_input_tokens: max(0, running.codex_input_tokens - Map.get(running, :codex_cached_input_tokens, 0)),
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
-      }
+      },
+      agent_messages: Map.get(running, :agent_messages, [])
     }
   end
 
@@ -192,6 +213,106 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(blocked.last_codex_message),
       last_event_at: iso8601(blocked.last_codex_timestamp)
     }
+  end
+
+  defp completed_entry_payload(entry) do
+    tokens = Map.get(entry, :tokens, %{})
+    input_tokens = Map.get(tokens, :input_tokens, 0)
+    cached_input_tokens = Map.get(tokens, :cached_input_tokens, 0)
+
+    %{
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: Map.get(entry, :identifier),
+      outcome: Map.get(entry, :outcome, "completed"),
+      error: Map.get(entry, :error),
+      issue_url: Map.get(entry, :issue_url),
+      state: Map.get(entry, :state),
+      worker_host: Map.get(entry, :worker_host),
+      workspace_path: Map.get(entry, :workspace_path),
+      session_id: Map.get(entry, :session_id),
+      started_at: Map.get(entry, :started_at),
+      completed_at: Map.get(entry, :completed_at),
+      runtime_seconds: Map.get(entry, :runtime_seconds, 0),
+      turn_count: Map.get(entry, :turn_count, 0),
+      tokens: %{
+        input_tokens: input_tokens,
+        cached_input_tokens: cached_input_tokens,
+        uncached_input_tokens: max(0, input_tokens - cached_input_tokens),
+        output_tokens: Map.get(tokens, :output_tokens, 0),
+        total_tokens: Map.get(tokens, :total_tokens, 0)
+      },
+      phase_token_usage: phase_usage_payload(Map.get(entry, :phase_token_usage, %{})),
+      phase_resumptions: phase_resumptions_payload(Map.get(entry, :phase_resumptions, %{})),
+      compaction_count: Map.get(entry, :compaction_count, 0),
+      circuit_warnings: Map.get(entry, :circuit_warnings, []),
+      agent_messages: Map.get(entry, :agent_messages, []),
+      last_event: Map.get(entry, :last_event),
+      last_message: Map.get(entry, :last_message)
+    }
+  end
+
+  defp token_totals_payload(totals) when is_map(totals) do
+    input_tokens = Map.get(totals, :input_tokens, 0)
+    cached_input_tokens = Map.get(totals, :cached_input_tokens, 0)
+
+    totals
+    |> Map.put(:cached_input_tokens, cached_input_tokens)
+    |> Map.put(:uncached_input_tokens, max(0, input_tokens - cached_input_tokens))
+  end
+
+  defp token_totals_payload(_totals) do
+    %{
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      uncached_input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      seconds_running: 0
+    }
+  end
+
+  defp phase_usage_payload(usage) when is_map(usage) do
+    Enum.map([:intake, :implementation, :verification, :publication], fn phase ->
+      totals = Map.get(usage, phase) || Map.get(usage, Atom.to_string(phase)) || %{}
+      input_tokens = map_integer(totals, :input_tokens)
+      cached_input_tokens = map_integer(totals, :cached_input_tokens)
+
+      %{
+        phase: phase,
+        input_tokens: input_tokens,
+        cached_input_tokens: cached_input_tokens,
+        uncached_input_tokens: max(0, input_tokens - cached_input_tokens),
+        output_tokens: map_integer(totals, :output_tokens),
+        total_tokens: map_integer(totals, :total_tokens)
+      }
+    end)
+  end
+
+  defp phase_usage_payload(_usage), do: phase_usage_payload(%{})
+
+  defp phase_resumptions_payload(resumptions) when is_map(resumptions) do
+    Map.new([:intake, :implementation, :verification, :publication], fn phase ->
+      {phase, map_integer(resumptions, phase)}
+    end)
+  end
+
+  defp phase_resumptions_payload(_resumptions), do: phase_resumptions_payload(%{})
+
+  defp map_integer(map, key) when is_map(map) do
+    value = Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    if is_integer(value) and value >= 0, do: value, else: 0
+  end
+
+  defp rate_limits_status_payload(status) when is_map(status) do
+    %{
+      status: Map.get(status, :status, :pending),
+      updated_at: iso8601(Map.get(status, :updated_at)),
+      error: Map.get(status, :error)
+    }
+  end
+
+  defp rate_limits_status_payload(_status) do
+    %{status: :pending, updated_at: nil, error: nil}
   end
 
   defp workspace_path(issue_identifier, running, retry, blocked) do

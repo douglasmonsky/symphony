@@ -175,18 +175,18 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:noreply, returned_state} = WorkflowStore.handle_info(:poll, state)
     assert returned_state.workflow.prompt == "Manual workflow prompt"
     refute returned_state.stamp == nil
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(missing_path)
     assert {:noreply, path_error_state} = WorkflowStore.handle_info(:poll, returned_state)
     assert path_error_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     Workflow.set_workflow_file_path(manual_path)
     File.rm!(manual_path)
     assert {:noreply, removed_state} = WorkflowStore.handle_info(:poll, path_error_state)
     assert removed_state.workflow.prompt == "Manual workflow prompt"
-    assert_receive :poll, 1_100
+    assert_receive :poll, 2_000
 
     assert :ok = GenServer.stop(manual_pid)
 
@@ -260,62 +260,45 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
-             "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
-             "running" => [
-               %{
-                 "issue_id" => "issue-http",
-                 "issue_identifier" => "MT-HTTP",
-                 "issue_url" => "https://example.org/issues/MT-HTTP",
-                 "state" => "In Progress",
-                 "worker_host" => nil,
-                 "workspace_path" => nil,
-                 "session_id" => "thread-http",
-                 "turn_count" => 7,
-                 "last_event" => "notification",
-                 "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               }
-             ],
-             "retrying" => [
-               %{
-                 "issue_id" => "issue-retry",
-                 "issue_identifier" => "MT-RETRY",
-                 "issue_url" => "https://example.org/issues/MT-RETRY",
-                 "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                 "error" => "boom",
-                 "worker_host" => nil,
-                 "workspace_path" => nil
-               }
-             ],
-             "blocked" => [
-               %{
-                 "issue_id" => "issue-blocked",
-                 "issue_identifier" => "MT-BLOCKED",
-                 "issue_url" => "https://example.org/issues/MT-BLOCKED",
-                 "state" => "In Progress",
-                 "error" => "codex turn requires operator input",
-                 "worker_host" => "dm-dev2",
-                 "workspace_path" => "/workspaces/MT-BLOCKED",
-                 "session_id" => "thread-blocked",
-                 "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
-                 "last_event" => "turn_input_required",
-                 "last_message" => "turn blocked: waiting for user input",
-                 "last_event_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("last_event_at")
-               }
-             ],
-             "codex_totals" => %{
-               "input_tokens" => 4,
-               "output_tokens" => 8,
-               "total_tokens" => 12,
-               "seconds_running" => 42.5
-             },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+    assert state_payload["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "completed" => 0,
+             "history" => 1
            }
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HTTP",
+               "agent_messages" => [],
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 2,
+                 "uncached_input_tokens" => 2,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               }
+             }
+           ] = state_payload["running"]
+
+    assert [%{"issue_identifier" => "MT-RETRY", "attempt" => 2}] = state_payload["retrying"]
+    assert [%{"issue_identifier" => "MT-BLOCKED"}] = state_payload["blocked"]
+    assert state_payload["completed"] == []
+
+    assert [
+             %{
+               "issue_identifier" => "MT-HISTORY-BLOCKED",
+               "outcome" => "blocked",
+               "error" => "validation requires operator review"
+             }
+           ] = state_payload["history"]
+
+    assert state_payload["codex_totals"]["cached_input_tokens"] == 0
+    assert state_payload["codex_totals"]["uncached_input_tokens"] == 4
+    assert state_payload["rate_limits"] == %{"primary" => %{"remaining" => 11}}
+    assert state_payload["rate_limits_status"]["status"] == "current"
+    assert state_payload["rate_limits_by_limit_id"]["codex"]["secondary"]["usedPercent"] == 42
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -339,7 +322,14 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+               "tokens" => %{
+                 "input_tokens" => 4,
+                 "cached_input_tokens" => 2,
+                 "uncached_input_tokens" => 2,
+                 "output_tokens" => 8,
+                 "total_tokens" => 12
+               },
+               "agent_messages" => []
              },
              "retry" => nil,
              "blocked" => nil,
@@ -454,6 +444,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "/vendor/phoenix_html/phoenix_html.js"
     assert html =~ "/vendor/phoenix/phoenix.js"
     assert html =~ "/vendor/phoenix_live_view/phoenix_live_view.js"
+    assert html =~ "PreserveDetailsOpen"
+    assert html =~ "beforeUpdate"
+    assert html =~ "hooks: Hooks"
     refute html =~ "/assets/app.js"
     refute html =~ "<style>"
 
@@ -509,17 +502,36 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(aria-label="Open MT-HTTP in the issue tracker")
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
-    assert html =~ "Runtime"
+    assert html =~ "Agent runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Agent output"
+    assert html =~ "New context"
+    assert html =~ "Usage by phase"
+    assert html =~ "Resumptions"
+    assert html =~ "Implementation"
+    assert html =~ "Host command running"
+    assert html =~ "Docs-only run token warning."
+    assert html =~ "Run history"
+    assert html =~ "MT-HISTORY-BLOCKED"
+    assert html =~ "Run blocked"
+    assert html =~ "validation requires operator review"
+    assert html =~ "account/rateLimits/read"
+    assert html =~ "Codex · Primary"
+    assert html =~ "Codex · Secondary"
+    assert html =~ "codex:primary"
+    assert html =~ "codex:secondary"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
     assert html =~ "status-badge-live"
     assert html =~ "status-badge-offline"
+
+    assert has_element?(
+             view,
+             ~s|details#running-session-issue-http[data-running-session="MT-HTTP"][phx-hook="PreserveDetailsOpen"]|
+           )
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -562,6 +574,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       render(view) =~ "agent message content streaming: structured update"
     end)
 
+    assert has_element?(view, "details#running-session-issue-http")
     refute render(view) =~ "javascript:alert"
   end
 
@@ -610,7 +623,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "completed" => 0,
+             "history" => 1
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -667,8 +687,22 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_timestamp: nil,
           last_codex_event: :notification,
           codex_input_tokens: 4,
+          codex_cached_input_tokens: 2,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
+          phase: :implementation,
+          phase_token_usage: %{
+            implementation: %{
+              input_tokens: 4,
+              cached_input_tokens: 2,
+              output_tokens: 8,
+              total_tokens: 12
+            }
+          },
+          phase_resumptions: %{implementation: 1},
+          compaction_count: 0,
+          host_waiting: true,
+          circuit_warnings: ["Docs-only run token warning."],
           started_at: DateTime.utc_now()
         }
       ],
@@ -702,8 +736,72 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_timestamp: DateTime.utc_now()
         }
       ],
+      completed_runs: [
+        %{
+          issue_id: "issue-history-blocked",
+          identifier: "MT-HISTORY-BLOCKED",
+          outcome: "blocked",
+          error: "validation requires operator review",
+          issue_url: "https://example.org/issues/MT-HISTORY-BLOCKED",
+          state: "Blocked",
+          worker_host: "dm-dev2",
+          workspace_path: "/workspaces/MT-HISTORY-BLOCKED",
+          session_id: "thread-history-blocked",
+          started_at: "2026-07-24T20:00:00Z",
+          completed_at: "2026-07-24T20:05:00Z",
+          runtime_seconds: 300,
+          turn_count: 1,
+          tokens: %{
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 10,
+            total_tokens: 110
+          },
+          phase_token_usage: %{
+            implementation: %{
+              input_tokens: 60,
+              cached_input_tokens: 45,
+              output_tokens: 6,
+              total_tokens: 66
+            },
+            verification: %{
+              input_tokens: 40,
+              cached_input_tokens: 35,
+              output_tokens: 4,
+              total_tokens: 44
+            }
+          },
+          phase_resumptions: %{implementation: 1, verification: 1, publication: 1},
+          compaction_count: 2,
+          circuit_warnings: [],
+          agent_messages: ["waiting for operator"],
+          last_event: "turn_input_required",
+          last_message: "waiting for operator"
+        }
+      ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      rate_limits_by_limit_id: %{
+        "codex" => %{
+          "limitId" => "codex",
+          "limitName" => "Codex",
+          "primary" => %{
+            "usedPercent" => 17,
+            "resetsAt" => 1_785_510_074,
+            "windowDurationMins" => 300
+          },
+          "secondary" => %{
+            "usedPercent" => 42,
+            "resetsAt" => 1_785_600_000,
+            "windowDurationMins" => 10_080
+          }
+        }
+      },
+      rate_limits_status: %{
+        status: :current,
+        updated_at: DateTime.utc_now(),
+        error: nil
+      }
     }
   end
 

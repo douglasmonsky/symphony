@@ -93,6 +93,9 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert {:error, :invalid_github_api_url} =
              GitHubClient.validate_settings(tracker_settings(%{"api_url" => "http://api.github.com"}))
 
+    assert {:error, :invalid_github_delivery_base_ref} =
+             GitHubClient.validate_settings(tracker_settings(%{"delivery_base_ref" => 123}))
+
     assert GitHubClient.secret_environment_names(tracker_settings(%{"token" => "$SYMPHONY_GITHUB_TOKEN"})) == ["GITHUB_TOKEN", "SYMPHONY_GITHUB_TOKEN"]
   end
 
@@ -232,7 +235,148 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
              )
   end
 
-  test "github_api preserves REST status and body while rejecting unsafe arguments" do
+  test "client gates explicit issue dependencies on a merged delivery pull request" do
+    dependency =
+      raw_issue(8)
+      |> Map.put("labels", [%{"name" => "human-review"}])
+
+    ready =
+      raw_issue(9)
+      |> Map.put("body", "Implement the next step.\n\nSymphony-Depends-On: #8")
+
+    later =
+      raw_issue(10)
+      |> Map.put("body", "Implement the later step.\n\nSymphony-Depends-On: #9")
+      |> Map.put("labels", [%{"name" => "agent-ready"}])
+
+    request_fun = fn
+      "GET", "/repos/octo/repo/issues", %{"page" => 1}, nil, _settings ->
+        {:ok, %{status: 200, body: [dependency, ready, later]}}
+
+      "GET", "/repos/octo/repo/pulls", params, nil, _settings ->
+        send(self(), {:delivery_pull_lookup, params})
+
+        {:ok,
+         %{
+           status: 200,
+           body: [
+             %{
+               "merged_at" => "2026-07-25T11:00:00Z",
+               "head" => %{"ref" => "codex/symphony-gh-8"},
+               "base" => %{"ref" => "codex/dashboard-history"}
+             }
+           ]
+         }}
+    end
+
+    settings = tracker_settings(%{"delivery_base_ref" => "codex/dashboard-history"})
+
+    assert {:ok, [issue_8, issue_9, issue_10]} =
+             GitHubClient.fetch_issues_by_states_for_test(["open"], settings, request_fun)
+
+    assert issue_8.dispatchable
+    assert issue_9.dispatchable
+    assert issue_9.blocked_by == []
+    refute issue_10.dispatchable
+
+    assert issue_10.blocked_by == [
+             %{
+               id: "9",
+               identifier: "GH-9",
+               state: "awaiting merged delivery into codex/dashboard-history"
+             }
+           ]
+
+    assert_receive {:delivery_pull_lookup,
+                    %{
+                      "state" => "closed",
+                      "head" => "octo:codex/symphony-gh-8",
+                      "base" => "codex/dashboard-history",
+                      "per_page" => 100
+                    }}
+
+    refute_receive {:delivery_pull_lookup, %{"head" => "octo:codex/symphony-gh-9"}}
+  end
+
+  test "client keeps a reviewable dependency blocked when its delivery pull is not merged" do
+    dependency =
+      raw_issue(8)
+      |> Map.put("labels", [%{"name" => "human-review"}])
+
+    ready =
+      raw_issue(9)
+      |> Map.put("body", "Symphony-Depends-On: #8")
+
+    request_fun = fn
+      "GET", "/repos/octo/repo/issues", %{"page" => 1}, nil, _settings ->
+        {:ok, %{status: 200, body: [dependency, ready]}}
+
+      "GET", "/repos/octo/repo/pulls", _params, nil, _settings ->
+        {:ok,
+         %{
+           status: 200,
+           body: [
+             %{
+               "merged_at" => nil,
+               "head" => %{"ref" => "codex/symphony-gh-8"},
+               "base" => %{"ref" => "codex/dashboard-history"}
+             }
+           ]
+         }}
+    end
+
+    assert {:ok, [_dependency, blocked]} =
+             GitHubClient.fetch_issues_by_states_for_test(
+               ["open"],
+               tracker_settings(%{"delivery_base_ref" => "codex/dashboard-history"}),
+               request_fun
+             )
+
+    refute blocked.dispatchable
+    assert [%{identifier: "GH-8"}] = blocked.blocked_by
+  end
+
+  test "client revalidates a dependency before dispatching an issue fetched by ID" do
+    dependent =
+      raw_issue(9)
+      |> Map.put("body", "Symphony-Depends-On: #8")
+
+    blocker =
+      raw_issue(8)
+      |> Map.put("labels", [%{"name" => "agent-blocked"}])
+
+    request_fun = fn
+      "GET", "/repos/octo/repo/issues/9", %{}, nil, _settings ->
+        {:ok, %{status: 200, body: dependent}}
+
+      "GET", "/repos/octo/repo/issues/8", %{}, nil, _settings ->
+        {:ok, %{status: 200, body: blocker}}
+
+      "GET", "/repos/octo/repo/pulls", _params, nil, _settings ->
+        flunk("a predecessor that has not reached review should not poll pull requests")
+    end
+
+    assert {:ok, [blocked]} =
+             GitHubClient.fetch_issues_by_ids_for_test(
+               ["9"],
+               tracker_settings(%{"delivery_base_ref" => "codex/dashboard-history"}),
+               request_fun
+             )
+
+    refute blocked.dispatchable
+    assert [%{identifier: "GH-8"}] = blocked.blocked_by
+  end
+
+  test "client parses only the explicit dependency metadata line" do
+    assert GitHubClient.dependency_number_for_test("Symphony-Depends-On: #42") == 42
+
+    assert GitHubClient.dependency_number_for_test("Context\nsymphony-depends-on: #7\nMore context") == 7
+
+    assert GitHubClient.dependency_number_for_test("Depends on #42") == nil
+    assert GitHubClient.dependency_number_for_test(nil) == nil
+  end
+
+  test "github_api projects REST responses while rejecting unsafe arguments" do
     test_pid = self()
     tracker_settings = tracker_settings()
 
@@ -257,6 +401,70 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     assert response["success"] == true
     assert Jason.decode!(response["output"]) == %{"status" => 201, "body" => %{"id" => 9}}
     assert response["contentItems"] == [%{"type" => "inputText", "text" => response["output"]}]
+
+    projected_issue =
+      GitHubAgentTool.execute(
+        "github_api",
+        %{"method" => "GET", "path" => "/repos/octo/repo/issues/42"},
+        github_client: fn _method, _path, _params, _body, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{
+               "number" => 42,
+               "state" => "open",
+               "title" => "large title not needed",
+               "body" => "large issue body not needed",
+               "user" => %{"login" => "octocat"},
+               "reactions" => %{"total_count" => 5},
+               "labels" => [%{"name" => "agent-ready", "color" => "blue"}]
+             }
+           }}
+        end
+      )
+
+    assert Jason.decode!(projected_issue["output"]) == %{
+             "status" => 200,
+             "body" => %{
+               "number" => 42,
+               "state" => "open",
+               "labels" => ["agent-ready"]
+             }
+           }
+
+    projected_pr =
+      GitHubAgentTool.execute(
+        "github_api",
+        %{"method" => "GET", "path" => "/repos/octo/repo/pulls?state=open"},
+        github_client: fn _method, _path, _params, _body, _opts ->
+          {:ok,
+           %{
+             status: 200,
+             body: [
+               %{
+                 "number" => 9,
+                 "state" => "open",
+                 "draft" => true,
+                 "html_url" => "https://github.test/pr/9",
+                 "head" => %{"ref" => "codex/gh-42", "repo" => %{"full_name" => "octo/repo"}},
+                 "base" => %{"ref" => "main"},
+                 "user" => %{"login" => "octocat"}
+               }
+             ]
+           }}
+        end
+      )
+
+    assert Jason.decode!(projected_pr["output"])["body"] == [
+             %{
+               "number" => 9,
+               "state" => "open",
+               "draft" => true,
+               "html_url" => "https://github.test/pr/9",
+               "head" => %{"ref" => "codex/gh-42"},
+               "base" => %{"ref" => "main"}
+             }
+           ]
 
     failure =
       GitHubAgentTool.execute(
@@ -362,7 +570,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       )
 
     assert non_json_body["success"]
-    assert non_json_body["output"] =~ "#PID"
+    assert Jason.decode!(non_json_body["output"]) == %{"status" => 200, "body" => nil}
   end
 
   test "tracker binds GitHub tools and token env names from provider config" do

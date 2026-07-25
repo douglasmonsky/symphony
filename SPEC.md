@@ -460,6 +460,18 @@ Fields:
   - State keys are normalized (`trim + lowercase`) for lookup.
   - Invalid entries (non-positive or non-numeric) are ignored.
 
+- `phased_execution` (boolean, OPTIONAL)
+  - Default: `false`.
+  - When enabled, the implementation MAY replace the generic continuation loop with a
+    bounded implementation, verification-interpretation, and publish-or-block pipeline.
+- `verification_command` (string, REQUIRED when `phased_execution` is `true`)
+- `verification_timeout_ms` (positive integer)
+  - Default: `3600000`.
+- `token_warn_total`, `token_pause_no_change`, `token_compact_total` (positive integers)
+  - Defaults: `250000`, `200000`, and `500000`.
+- `token_cache_ratio_pause` (positive number)
+  - Default: `10.0`.
+
 #### 5.3.6 `codex` (object)
 
 Fields:
@@ -1171,6 +1183,22 @@ Behavior:
 4. Forward app-server events to orchestrator.
 5. On any error, fail the worker attempt (the orchestrator will retry).
 
+When `agent.phased_execution` is enabled, a conforming implementation:
+
+1. MUST keep deterministic branch, lifecycle-label, workpad, verification-launch,
+   verification-artifact, and declared-outcome cleanup mechanics in the host.
+2. MUST run the configured verification command once without a PTY (or with deterministic
+   terminal dimensions), stream full output to an artifact, and provide the model only a
+   bounded completion summary.
+3. MUST explicitly compact between broad model phases and MUST NOT require model responses
+   for dashboard progress updates.
+4. SHOULD project issue and pull-request tool responses to the fields needed by the task.
+5. SHOULD enforce configured token circuit breakers outside the model loop.
+6. MUST keep Git and GitHub publication mechanics out of the model when the host owns phased
+   delivery. The model supplies one structured ready-or-blocked decision; the host validates the
+   verification artifact, base, branch, and authorized paths before an idempotent commit, push,
+   and pull-request create-or-update transaction.
+
 Note:
 
 - Workspaces are intentionally preserved after successful runs.
@@ -1276,6 +1304,10 @@ Adapter output MUST satisfy Section 4.1.1. In addition:
 - Preserve provider spelling in `state`, but trim and lowercase only for scheduler comparisons.
 - `blocked_by` is best-effort metadata; adapters MUST NOT invent blocker semantics they cannot
   represent reliably.
+- The GitHub adapter MAY populate `blocked_by` from an explicit
+  `Symphony-Depends-On: #<issue-number>` issue-body line. That dependency is resolved only when
+  the predecessor's Symphony delivery pull request is merged into the configured
+  `tracker.provider.delivery_base_ref`; ordering or issue closure alone is insufficient.
 - `dispatchable` MUST be explicit. It is `true` only when provider-specific eligibility checks
   pass; the generic scheduler never tries to reconstruct those checks from `native_ref`.
 - `native_ref` MUST be null or a JSON-safe object containing only non-secret values safe to expose
@@ -1397,10 +1429,14 @@ SHOULD return:
 - session and retry rows SHOULD include the tracker-provided issue URL when available
 - `codex_totals`
   - `input_tokens`
+  - `cached_input_tokens`
+  - `uncached_input_tokens`
   - `output_tokens`
   - `total_tokens`
   - `seconds_running` (aggregate runtime seconds as of snapshot time, including active sessions)
 - `rate_limits` (latest coding-agent rate limit payload, if available)
+- `rate_limits_status` (freshness, last successful update, and polling error, if available)
+- `completed_runs` (bounded recent successful run records, if retained)
 
 RECOMMENDED snapshot error modes:
 
@@ -1488,7 +1524,11 @@ Enablement (extension):
 
 - Host a human-readable dashboard at `/`.
 - The returned document SHOULD depict the current state of the system (for example active sessions,
-  retry delays, token consumption, runtime totals, recent events, and health/error indicators).
+  retry delays, completed runs, cache-aware token consumption, runtime totals, recent agent
+  messages, and health/error indicators).
+- A dashboard that reports account rate limits SHOULD read the coding-agent account endpoint
+  independently of active worker notifications and SHOULD distinguish unavailable or stale account
+  data from unavailable orchestrator state.
 - It is up to the implementation whether this is server-generated HTML or a client-side app that
   consumes the JSON API below.
 

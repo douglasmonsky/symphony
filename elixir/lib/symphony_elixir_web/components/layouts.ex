@@ -33,8 +33,20 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
+            var Hooks = {
+              PreserveDetailsOpen: {
+                beforeUpdate: function () {
+                  this.wasOpen = this.el.open;
+                },
+                updated: function () {
+                  this.el.open = this.wasOpen;
+                }
+              }
+            };
+
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
-              params: {_csrf_token: csrfToken}
+              params: {_csrf_token: csrfToken},
+              hooks: Hooks
             });
 
             liveSocket.connect();

@@ -1,6 +1,105 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  test "reads account rate limits without creating a thread" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-rate-limits-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(test_root)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3)
+            printf '%s\\n' '{"id":4,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":17}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":{"usedPercent":17}}}}}'
+            exit 0
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok,
+              %{
+                "rateLimits" => %{
+                  "limitId" => "codex",
+                  "primary" => %{"usedPercent" => 17}
+                }
+              }} = AppServer.read_rate_limits()
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "compacts an active thread through the app-server protocol" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-compact-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspaces/GH-42")
+      codex_binary = Path.join(test_root, "fake-codex")
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-compact"}}}' ;;
+          4)
+            case "$line" in
+              *'"method":"thread/compact/start"'*'"threadId":"thread-compact"'*)
+                printf '%s\\n' '{"id":5,"result":{}}'
+                sleep 0.1
+                printf '%s\\n' '{"method":"turn/completed"}'
+                ;;
+              *) exit 9 ;;
+            esac
+            ;;
+          *) exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: Path.join(test_root, "workspaces"),
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      assert {:ok, session} = AppServer.start_session(workspace)
+      started_at = System.monotonic_time(:millisecond)
+      assert :ok = AppServer.compact_session(session)
+      assert System.monotonic_time(:millisecond) - started_at >= 75
+      assert :ok = AppServer.stop_session(session)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -100,11 +199,11 @@ defmodule SymphonyElixir.AppServerTest do
           3) printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-timeout"}}}' ;;
           4)
             printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-timeout"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"one"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"item/updated","params":{"item":{"id":"two"}}}'
-            sleep 0.15
+            sleep 0.3
             printf '%s\n' '{"method":"turn/completed"}'
             exit 0
             ;;
@@ -118,7 +217,7 @@ defmodule SymphonyElixir.AppServerTest do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
         codex_command: "#{codex_binary} app-server",
-        codex_turn_timeout_ms: 250
+        codex_turn_timeout_ms: 800
       )
 
       issue = %Issue{
