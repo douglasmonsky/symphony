@@ -43,6 +43,7 @@ defmodule SymphonyElixir.TaskCapsuleTest do
     assert capsule =~ "Objective: Explain how the host waits without replaying command output."
     assert capsule =~ "- elixir/AGENTS.md"
     assert capsule =~ "- elixir/README.md"
+    assert TaskCapsule.authorized_paths(issue) == ["elixir/AGENTS.md", "elixir/README.md"]
     assert capsule =~ "Implementation constraints:"
     assert capsule =~ "- Add one concise sentence."
     assert capsule =~ "- The two documents agree."
@@ -99,11 +100,11 @@ defmodule SymphonyElixir.TaskCapsuleTest do
         base_branch: "release/docs"
       })
 
-    assert publication =~ ".codex/skills/push/SKILL.md"
-    assert publication =~ "do not run its validation step"
-    assert publication =~ "symphony-git publish"
+    assert publication =~ "Do not load skills"
+    assert publication =~ "Symphony owns the complete delivery transaction"
     assert publication =~ "Pull request base: release/docs"
-    assert publication =~ "SYMPHONY_OUTCOME: READY"
-    assert publication =~ "SYMPHONY_OUTCOME: BLOCKED"
+    assert publication =~ "SYMPHONY_DELIVERY:"
+    assert publication =~ ~s("outcome":"ready")
+    assert publication =~ ~s("outcome":"blocked")
   end
 end

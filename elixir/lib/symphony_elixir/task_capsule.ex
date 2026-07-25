@@ -26,7 +26,7 @@ defmodule SymphonyElixir.TaskCapsule do
     Attempt: #{attempt || 1}
 
     Allowed files:
-    #{render_list(allowed_files(description))}
+    #{render_list(authorized_paths(issue))}
 
     Implementation constraints:
     #{render_list(section_items(description, ["scope"]))}
@@ -74,6 +74,19 @@ defmodule SymphonyElixir.TaskCapsule do
 
   def publication_base(%Issue{}), do: nil
 
+  @spec authorized_paths(Issue.t()) :: [String.t()]
+  def authorized_paths(%Issue{description: description}) when is_binary(description) do
+    description
+    |> section_items(["scope"])
+    |> Enum.flat_map(&Regex.scan(~r/`([^`\n]+)`/, &1, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.filter(&path_like?/1)
+    |> Enum.uniq()
+    |> Enum.take(20)
+  end
+
+  def authorized_paths(%Issue{}), do: []
+
   @spec phase_handoff(atom(), map()) :: String.t()
   def phase_handoff(:verification, context) when is_map(context) do
     """
@@ -106,21 +119,14 @@ defmodule SymphonyElixir.TaskCapsule do
     Changed paths:
     #{render_list(Map.get(context, :changed_paths, []))}
 
-    Load `.codex/skills/push/SKILL.md` only for commit, push, and PR mechanics. The host
-    verification above is authoritative: do not run its validation step or launch the final
-    gate again.
+    Make only the publish-or-block judgment. Do not load skills, inspect additional files, edit,
+    fetch, commit, push, or call GitHub APIs. Symphony owns the complete delivery transaction.
 
-    If verification passed, publish exactly the changed paths with
-    `/Users/Monsky/.codex-symphony/bin/symphony-git publish <conventional-commit-message> <path>...`,
-    then open or update the PR against the exact pull request base above. If verification
-    failed or a true external blocker remains, preserve the workspace and report BLOCKED.
-    Symphony will perform lifecycle labels, workpad evidence attachment, and final cleanup after
-    the declared result.
+    End with exactly one single-line JSON declaration. For a ready result:
+    SYMPHONY_DELIVERY: {"outcome":"ready","commit_message":"feat: concise message","pr_title":"Concise title","summary":"Reader-facing summary"}
 
-    End the final response with exactly one declaration:
-    SYMPHONY_OUTCOME: READY
-    or
-    SYMPHONY_OUTCOME: BLOCKED
+    For a blocked result:
+    SYMPHONY_DELIVERY: {"outcome":"blocked","reason":"Specific blocker"}
     """
     |> String.trim()
   end
@@ -149,16 +155,6 @@ defmodule SymphonyElixir.TaskCapsule do
       [] -> fallback
       items -> Enum.join(items, " ")
     end
-  end
-
-  defp allowed_files(description) do
-    description
-    |> section_items(["scope"])
-    |> Enum.flat_map(&Regex.scan(~r/`([^`\n]+)`/, &1, capture: :all_but_first))
-    |> List.flatten()
-    |> Enum.filter(&path_like?/1)
-    |> Enum.uniq()
-    |> Enum.take(20)
   end
 
   defp path_like?(value) do

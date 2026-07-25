@@ -1194,6 +1194,10 @@ When `agent.phased_execution` is enabled, a conforming implementation:
    for dashboard progress updates.
 4. SHOULD project issue and pull-request tool responses to the fields needed by the task.
 5. SHOULD enforce configured token circuit breakers outside the model loop.
+6. MUST keep Git and GitHub publication mechanics out of the model when the host owns phased
+   delivery. The model supplies one structured ready-or-blocked decision; the host validates the
+   verification artifact, base, branch, and authorized paths before an idempotent commit, push,
+   and pull-request create-or-update transaction.
 
 Note:
 
